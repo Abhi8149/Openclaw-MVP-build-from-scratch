@@ -28,6 +28,59 @@ function isProbablyTextFile(filePath: string): boolean {
     return TEXT_EXT.has(ext) || ext === "";
 }
 
+function leadingWhitespace(line: string): string {
+    return line.match(/^[ \t]*/)?.[0] ?? "";
+}
+
+function collapseWhitespace(line: string): string {
+    return line.trim().replace(/[ \t]+/g, " ");
+}
+
+// Finds all windows in contentLines whose lines equal searchLines under `normalize`.
+function findLineWindowMatches(
+    contentLines: string[],
+    searchLines: string[],
+    normalize: (line: string) => string,
+): number[] {
+    const matches: number[] = [];
+    const normSearch = searchLines.map(normalize);
+    for (let i = 0; i + searchLines.length <= contentLines.length; i++) {
+        let ok = true;
+        for (let j = 0; j < searchLines.length; j++) {
+            if (normalize(contentLines[i + j]!) !== normSearch[j]) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) matches.push(i);
+    }
+    return matches;
+}
+
+// Re-applies the actual file's indentation to a replacement block that was
+// written against a search block with different (but equivalent) indentation.
+function reindentReplacement(
+    replaceLines: string[],
+    searchFirstLine: string,
+    actualFirstLine: string,
+): string[] {
+    const searchIndent = leadingWhitespace(searchFirstLine);
+    const actualIndent = leadingWhitespace(actualFirstLine);
+    if (searchIndent === actualIndent) return replaceLines;
+
+    // Apply the same absolute indent shift to every line's own indentation,
+    // rather than slicing a fixed prefix, so relative nesting is preserved.
+    const delta = actualIndent.length - searchIndent.length;
+    const indentChar = actualIndent[0] ?? searchIndent[0] ?? " ";
+
+    return replaceLines.map((line) => {
+        if (line.trim() === "") return line;
+        const ownIndent = leadingWhitespace(line);
+        const newLen = Math.max(0, ownIndent.length + delta);
+        return indentChar.repeat(newLen) + line.slice(ownIndent.length);
+    });
+}
+
 export class ToolExecutor {
     private overlay = new Map<string, string>();
     private deleted = new Set<string>();
@@ -440,22 +493,54 @@ export class ToolExecutor {
 
     let currentContent = originalContent.replace(/\r\n/g, "\n");
 
-    // Apply each search-and-replace block one by one
+    // Apply each search-and-replace block one by one. Matching is a cascade:
+    // exact string match first, then indentation-tolerant, then whitespace-
+    // tolerant line matching, since models frequently reformat whitespace
+    // even when the code they intend to match is otherwise identical.
     for (const edit of edits) {
         const searchStr = edit.search.replace(/\r\n/g, "\n");
         const replaceStr = edit.replace.replace(/\r\n/g, "\n");
 
-        if (!currentContent.includes(searchStr)) {
-            throw new Error(`Could not find search block in ${rel}:\n${searchStr}`);
+        const exactOccurrences = currentContent.split(searchStr).length - 1;
+        if (exactOccurrences === 1) {
+            currentContent = currentContent.replace(searchStr, replaceStr);
+            continue;
         }
-
-        // Verify there is only one match to avoid editing the wrong place
-        const occurrences = currentContent.split(searchStr).length - 1;
-        if (occurrences > 1) {
+        if (exactOccurrences > 1) {
             throw new Error(`Ambiguous match: search block appears multiple times in ${rel}`);
         }
 
-        currentContent = currentContent.replace(searchStr, replaceStr);
+        const contentLines = currentContent.split("\n");
+        const searchLines = searchStr.split("\n");
+
+        let matches = findLineWindowMatches(contentLines, searchLines, (l) => l.trim());
+        let level = "indentation-tolerant";
+        if (matches.length === 0) {
+            matches = findLineWindowMatches(contentLines, searchLines, collapseWhitespace);
+            level = "whitespace-tolerant";
+        }
+
+        if (matches.length === 0) {
+            throw new Error(
+                `Could not find search block in ${rel} (tried exact, indentation-tolerant, and whitespace-tolerant matching):\n${searchStr}`,
+            );
+        }
+        if (matches.length > 1) {
+            throw new Error(
+                `Ambiguous match: search block matches ${matches.length} locations in ${rel} via ${level} matching. Add more surrounding context to disambiguate.`,
+            );
+        }
+
+        const start = matches[0]!;
+        const end = start + searchLines.length;
+        const replaceLines = reindentReplacement(
+            replaceStr.split("\n"),
+            searchLines[0] ?? "",
+            contentLines[start]!,
+        );
+
+        contentLines.splice(start, end - start, ...replaceLines);
+        currentContent = contentLines.join("\n");
     }
 
     // Stage the modification using the existing overlay map
