@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { ToolExecutor } from "./tool-executor";
+import { generateRepoMap } from "../../utils/repo-map";
 
 export function createAgentTool(executor: ToolExecutor) {
     return {
@@ -102,5 +103,25 @@ export function createAgentTool(executor: ToolExecutor) {
             }),
             execute: async ({ path: p }) => executor.readSkill(p),
         }),
+
+        //new functions from my side
+        edit_file: tool({
+            description: "Make targeted edits to a file using search and replace blocks.",
+            inputSchema: z.object({
+                path: z.string().describe("Relative path of the file"),
+                edits: z.array(z.object({
+                    search: z.string().describe("The exact block of code to find (must match exactly including spacing)"),
+                    replace: z.string().describe("The block of code to replace it with")
+                })).min(1)
+            }),
+            execute: async ({ path: p, edits }) => executor.editFile(p, edits)
+        }),
+
+        get_repo_map: tool({
+            description: "Get a map of all files and top-level exported functions in the project.",
+            inputSchema: z.object({}),
+            execute: async () => generateRepoMap(executor.config.codebasePath, executor.config.excludePatterns)
+        })
+
     }
 }

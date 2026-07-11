@@ -38,7 +38,7 @@ export class ToolExecutor {
 
     constructor(
         private readonly tracker: ActionTracker,
-        private readonly config: AgentConfig,
+        public readonly config: AgentConfig,
     ) { }
 
     private resolveSafe(rel: string): string {
@@ -426,9 +426,95 @@ export class ToolExecutor {
     return { errors };
   }
 
+  editFile(rel: string, edits: Array<{ search: string; replace: string }>): string {
+    if (!this.config.tools.allowFileModification) {
+        throw new Error("File modification disabled");
+    }
+    this.assertNotExcluded(rel, "edit_file");
+
+    const key = this.norm(rel);
+    const originalContent = this.getEffectiveText(rel);
+    if (originalContent === undefined) {
+        throw new Error(`edit_file: file not found: ${rel}`);
+    }
+
+    let currentContent = originalContent;
+
+    // Apply each search-and-replace block one by one
+    for (const edit of edits) {
+        const searchStr = edit.search;
+        const replaceStr = edit.replace;
+
+        if (!currentContent.includes(searchStr)) {
+            throw new Error(`Could not find search block in ${rel}:\n${searchStr}`);
+        }
+
+        // Verify there is only one match to avoid editing the wrong place
+        const occurrences = currentContent.split(searchStr).length - 1;
+        if (occurrences > 1) {
+            throw new Error(`Ambiguous match: search block appears multiple times in ${rel}`);
+        }
+
+        currentContent = currentContent.replace(searchStr, replaceStr);
+    }
+
+    // Stage the modification using the existing overlay map
+    this.overlay.set(key, currentContent);
+    
+    // Log the action to the tracker so diffs can be generated
+    this.tracker.log({
+        type: "file_modify",
+        path: key,
+        details: { before: originalContent, after: currentContent },
+        status: "pending",
+    });
+
+    return `Staged targeted edits for: ${key}`;
+  }
+
+  tempWriteStaged(): () => void {
+    const backups = new Map<string, string | null>(); // null means file did not exist
+
+    // 1. Back up and write overlay files
+    for (const [rel, content] of this.overlay.entries()) {
+        const abs = this.resolveSafe(rel);
+        if (fs.existsSync(abs)) {
+            backups.set(rel, fs.readFileSync(abs, "utf8"));
+        } else {
+            backups.set(rel, null);
+        }
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, content, "utf8");
+    }
+
+    // 2. Back up and handle deleted files
+    for (const rel of this.deleted) {
+        const abs = this.resolveSafe(rel);
+        if (fs.existsSync(abs)) {
+            backups.set(rel, fs.readFileSync(abs, "utf8"));
+            fs.rmSync(abs, { force: true });
+        }
+    }
+
+    // Return restore function
+    return () => {
+        // Restore deleted or modified files
+        for (const [rel, original] of backups.entries()) {
+            const abs = this.resolveSafe(rel);
+            if (original === null) {
+                if (fs.existsSync(abs)) {
+                    fs.rmSync(abs, { force: true });
+                }
+            } else {
+                fs.mkdirSync(path.dirname(abs), { recursive: true });
+                fs.writeFileSync(abs, original, "utf8");
+            }
+        }
+    };
+  }
+
   clearStaging():void{
     this.overlay.clear()
     this.deleted.clear()
   }
-
 }

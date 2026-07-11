@@ -8,24 +8,26 @@ import {
 } from "ai";
 import { z } from "zod";
 import chalk from "chalk";
-import { getAgentModel } from "../../ai/ai.config.ts";
-import { ActionTracker } from "../agents/action-tracker.ts";
-import { ToolExecutor } from "../agents/tool-executor.ts";
-import { defaultAgentConfig } from "../agents/types.ts";
-import type {Plan, Planstep} from "./types.ts";
-import { createWebTools } from "./web-tool.ts";
-import { title } from "node:process";
+import { getAgentModel } from "../../ai";
+import { ActionTracker } from "../agents/action-tracker";
+import { ToolExecutor } from "../agents/tool-executor";
+import { defaultAgentConfig } from "../agents/types";
+import type {Plan, Planstep} from "./types"
+import { createWebTools } from "./web-tool";
 
-const planSchema=z.object({
-    researchSummary:z.string().optional(),
-    steps:z.array(
-        z.object({
-            title:z.string(),
-            description:z.string(),
-            hints:z.array(z.string()).optional(),
-            complexity:z.enum(["low","medium","high"]).optional()
-        })
-    ).min(1).max(15)
+const planSchema = z.object({
+  researchSummary: z.string().optional(),
+  steps: z
+    .array(
+      z.object({
+        title: z.string(),
+        description: z.string(),
+        hints: z.array(z.string()).optional(),
+        complexity: z.enum(["low", "medium", "high"]).optional(),
+      }),
+    )
+    .min(1)
+    .max(15),
 });
 
 function readOnlyTools(executor: ToolExecutor) {
@@ -90,3 +92,53 @@ function readOnlyTools(executor: ToolExecutor) {
   };
 }
 
+const PLAN_INSTRUCTIONS = (codebase: string, hasWeb: boolean) =>
+  [
+    "You are a Plan-Mode planner. You DO NOT modify files.",
+    `Workspace: ${codebase}`,
+    "Use read-only tools for codebase/skills research.",
+    hasWeb
+      ? "Web tools are available (web_search/web_crawl/fetch_url). Use only when needed."
+      : "Web tools are unavailable (no FIRECRAWL_API_KEY).",
+    "Output must match the provided JSON schema.",
+    "Keep it short: 1–15 steps.",
+  ].join("\n");
+
+export async function generatePlan(goal: string) {
+  const config = defaultAgentConfig();
+  const tracker = new ActionTracker();
+  const executor = new ToolExecutor(tracker, config);
+
+
+  const hasWeb = !!process.env.FIRECRAWL_API_KEY;
+  const model = wrapLanguageModel({
+    model:getAgentModel(),
+    middleware:extractJsonMiddleware()
+  })
+
+
+  const tools = { ...readOnlyTools(executor) , ...(hasWeb ? createWebTools(tracker) : {}) };
+
+  console.log(chalk.cyan("\n🔍 Researching & drafting a plan…\n"));
+
+  const result = await generateText({
+    model,
+    tools,
+    stopWhen:stepCountIs(20),
+    system:PLAN_INSTRUCTIONS(config.codebasePath , hasWeb),
+    prompt:`User goal: \n${goal}`,
+    output:Output.object({schema:planSchema})
+  });
+
+  const validated = planSchema.parse(result.output);
+
+  const steps:Planstep[] = validated.steps.map((s , i)=>({
+    id:`step-${i+1}`,
+    title:s.title,
+    description:s.description,
+    hints:s.hints,
+    complexity:s.complexity ?? "medium"
+  }));
+
+  return {goal , researchSummary:validated.researchSummary , steps}
+}

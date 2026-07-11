@@ -8,7 +8,7 @@ import { stepCountIs, ToolLoopAgent, tool } from 'ai';
 import { getAgentModel } from '../../ai';
 import {z} from "zod";
 import { runApprovalFlow } from '../agents/approval';
-import { exec } from 'node:child_process';
+import { createWebTools } from '../plan/web-tool';
 
 
 export function createAskTools(executor: ToolExecutor) {
@@ -73,7 +73,7 @@ export function createAskTools(executor: ToolExecutor) {
   };
 }
 
-function asMd(question: string, answer: string): string {
+function askMd(question: string, answer: string): string {
   return `# Ask Mode\n\n## Question\n\n${question.trim()}\n\n## Answer\n\n${answer.trim()}\n`;
 }
 export async function runAskMode(){
@@ -101,7 +101,8 @@ export async function runAskMode(){
     const executor = new ToolExecutor(tracker, config);
 
     const tools={
-        ...createAskTools(executor)
+        ...createAskTools(executor),
+        ...createWebTools(tracker)
     };
 
     const agent= new ToolLoopAgent({
@@ -134,7 +135,8 @@ export async function runAskMode(){
 
     if(isCancel(filename)) return;
 
-    executor.createFile(filename, asMd(question,answer));
+    const trimmedFilename = filename.trim();
+    executor.createFile(trimmedFilename, askMd(question,answer));
     const ok=await runApprovalFlow(tracker)
     if(!ok) return executor.clearStaging();
 
