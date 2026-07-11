@@ -6,7 +6,9 @@ export function formatPatch(
     before:string,
     after:string,
 ):string{
-    return createTwoFilesPatch(filePath, filePath, before, after, "", "",{
+    const beforeNormalized = before.replace(/\r\n/g, "\n");
+    const afterNormalized = after.replace(/\r\n/g, "\n");
+    return createTwoFilesPatch(filePath, filePath, beforeNormalized, afterNormalized, "", "",{
         context:3
     })
 }

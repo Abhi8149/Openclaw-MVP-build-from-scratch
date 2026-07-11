@@ -438,12 +438,12 @@ export class ToolExecutor {
         throw new Error(`edit_file: file not found: ${rel}`);
     }
 
-    let currentContent = originalContent;
+    let currentContent = originalContent.replace(/\r\n/g, "\n");
 
     // Apply each search-and-replace block one by one
     for (const edit of edits) {
-        const searchStr = edit.search;
-        const replaceStr = edit.replace;
+        const searchStr = edit.search.replace(/\r\n/g, "\n");
+        const replaceStr = edit.replace.replace(/\r\n/g, "\n");
 
         if (!currentContent.includes(searchStr)) {
             throw new Error(`Could not find search block in ${rel}:\n${searchStr}`);

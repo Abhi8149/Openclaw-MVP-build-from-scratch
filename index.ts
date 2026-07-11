@@ -14,3 +14,4 @@ program.command("wakeup").description("Show the banner and pick cli or telgram m
 await program.parseAsync(process.argv);
 
 console.log("App initiated");
+
