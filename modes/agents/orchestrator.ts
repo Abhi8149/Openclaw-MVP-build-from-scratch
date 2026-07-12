@@ -5,13 +5,15 @@ import { ActionTracker } from "./action-tracker";
 import { ToolExecutor } from "./tool-executor";
 import { createAgentTool } from "./agent-tools";
 import { stepCountIs, ToolLoopAgent } from "ai";
-import { getAgentModel, MODEL_PRICING } from "../../ai";
+import { getAgentModel, MODEL_PRICING, wrapModelWithRollingMemory } from "../../ai";
 import { renderTerminalMarkdown } from "../../tui/terminal-md";
 import { runApprovalFlow, groupPending } from "./approval";
 import { exec } from "node:child_process";
 import { GitHelper } from "../../utils/git";
 import { runProjectChecks } from "../../utils/checker";
 import { GuiServer } from "./gui-server";
+import { generateRepoMap } from "../../utils/repo-map";
+import { semanticSearch } from "../../utils/semantic-retrieval";
 
 export async function runAgentMode(options?: { gui?: boolean; budget?: number; goal?: string; guiServer?: GuiServer }) {
     console.log(chalk.bold("\n Agent Mode\n"));
@@ -60,8 +62,21 @@ export async function runAgentMode(options?: { gui?: boolean; budget?: number; g
         }
     }
 
+    // GraphRAG: Find the top 3 semantically related files based on task intent
+    const relatedFiles = await semanticSearch(goal.trim(), config.codebasePath, config.excludePatterns);
+    const semanticFilesContent = relatedFiles
+        .map((f) => `--- File: ${f.path} ---\n${f.content}`)
+        .join("\n\n");
+
+    // Skeletal Map: Get line-by-line class and function mappings
+    const skeletalMap = generateRepoMap(config.codebasePath, config.excludePatterns);
+
+    // Rolling State Memory: Wrap model to summarize history and keep context compact
+    const rawModel = getAgentModel(goal);
+    const wrappedModel = wrapModelWithRollingMemory(rawModel, goal, skeletalMap, semanticFilesContent);
+
     const agent = new ToolLoopAgent({
-        model: getAgentModel(),
+        model: wrappedModel,
         stopWhen: stepCountIs(40),
         instructions: [
             `Workspace root: ${config.codebasePath}`,
@@ -154,7 +169,15 @@ export async function runAgentMode(options?: { gui?: boolean; budget?: number; g
                 const md = renderTerminalMarkdown(result.text);
                 console.log(md);
                 if (guiServer) {
-                    guiServer.addAgentMessage(result.text);
+                    const turnInput = result.usage?.inputTokens ?? 0;
+                    const turnOutput = result.usage?.outputTokens ?? 0;
+                    const modelName = process.env.OPENROUTER_MODEL || "free";
+                    const rate = MODEL_PRICING[modelName] || { input: 0, output: 0 };
+                    const turnCost = ((turnInput * rate.input) + (turnOutput * rate.output)) / 1_000_000;
+                    guiServer.addAgentMessage(result.text, {
+                        tokens: { input: turnInput, output: turnOutput },
+                        cost: turnCost,
+                    });
                 }
             }
             break; // Success!

@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { generateRepoMap } from "../utils/repo-map";
 import { GuiServer } from "../modes/agents/gui-server";
+import { calculateTradeoff } from "../ai/ai.config";
 
 function createTempDir() {
     return fs.mkdtempSync(path.join(os.tmpdir(), "advanced-test-"));
@@ -96,5 +97,13 @@ describe("Advanced Product Features", () => {
         } finally {
             gui.stop();
         }
+    });
+
+    test("calculateTradeoff correctly estimates task cost-quality tradeoff values", () => {
+        const simpleScore = calculateTradeoff("Add a comment in git.ts and update styling color");
+        const complexScore = calculateTradeoff("Refactor database schema connection pooling and heal compiler issues");
+
+        expect(simpleScore).toBeGreaterThan(5.0);
+        expect(complexScore).toBeLessThan(5.0);
     });
 });

@@ -55,6 +55,8 @@ export const defaultAgentConfig = (): AgentConfig => ({
   excludePatterns: [
     'node_modules',
     '.git',
+    '.claude',
+    '.openclaw-embeddings.json',
     'dist',
     'build',
     '.next',

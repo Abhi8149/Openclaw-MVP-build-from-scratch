@@ -8,6 +8,7 @@ export interface GuiState {
     maxAttempts: number;
     budgetUsed: number;
     maxBudget: number;
+    totalTokens: { input: number; output: number };
     logs: string[];
     stagedGroups: Array<{
         label: string;
@@ -19,6 +20,8 @@ export interface GuiState {
         sender: "user" | "agent";
         text: string;
         timestamp: string;
+        tokens?: { input: number; output: number };
+        cost?: number;
     }>;
 }
 
@@ -34,6 +37,7 @@ export class GuiServer extends EventEmitter {
         maxAttempts: 3,
         budgetUsed: 0.0,
         maxBudget: 1.0,
+        totalTokens: { input: 0, output: 0 },
         logs: [],
         stagedGroups: [],
         messages: [],
@@ -48,32 +52,39 @@ export class GuiServer extends EventEmitter {
             this.server = http.createServer((req, res) => {
                 const url = req.url ?? "";
                 const method = req.method ?? "GET";
+                const pathname = url.split("?")[0] || "/";
 
                 // Serve Web Dashboard
-                if (url === "/" || url === "/index.html") {
+                if (pathname === "/" || pathname === "/index.html") {
                     res.writeHead(200, { "Content-Type": "text/html" });
                     res.end(this.getHtmlContent());
                     return;
                 }
 
                 // Server-Sent Events Endpoint
-                if (url === "/events") {
+                if (pathname === "/events") {
                     res.writeHead(200, {
                         "Content-Type": "text/event-stream",
                         "Cache-Control": "no-cache",
-                        Connection: "keep-alive",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
                     });
                     res.write(`data: ${JSON.stringify({ type: "init", state: this.state })}\n\n`);
                     this.clients.push(res);
 
+                    const heartbeat = setInterval(() => {
+                        res.write(":\n\n"); // Heartbeat comment to keep connection alive
+                    }, 10000);
+
                     req.on("close", () => {
+                        clearInterval(heartbeat);
                         this.clients = this.clients.filter((c) => c !== res);
                     });
                     return;
                 }
 
                 // API: Submit prompt
-                if (url === "/api/prompt" && method === "POST") {
+                if (pathname === "/api/prompt" && method === "POST") {
                     let body = "";
                     req.on("data", (chunk) => {
                         body += chunk.toString();
@@ -108,7 +119,7 @@ export class GuiServer extends EventEmitter {
                 }
 
                 // API: Approve staged changes
-                if (url === "/api/approve" && method === "POST") {
+                if (pathname === "/api/approve" && method === "POST") {
                     res.writeHead(200, { "Content-Type": "application/json" });
                     res.end(JSON.stringify({ success: true }));
                     if (this.pendingApprovalResolver) {
@@ -119,7 +130,7 @@ export class GuiServer extends EventEmitter {
                 }
 
                 // API: Reject staged changes
-                if (url === "/api/reject" && method === "POST") {
+                if (pathname === "/api/reject" && method === "POST") {
                     res.writeHead(200, { "Content-Type": "application/json" });
                     res.end(JSON.stringify({ success: true }));
                     if (this.pendingApprovalResolver) {
@@ -156,13 +167,19 @@ export class GuiServer extends EventEmitter {
         });
     }
 
-    public addAgentMessage(text: string) {
+    public addAgentMessage(text: string, meta?: { tokens?: { input: number; output: number }; cost?: number }) {
         this.updateState((s) => {
             s.messages.push({
                 sender: "agent",
                 text,
                 timestamp: new Date().toLocaleTimeString(),
+                tokens: meta?.tokens,
+                cost: meta?.cost,
             });
+            if (meta?.tokens) {
+                s.totalTokens.input += meta.tokens.input;
+                s.totalTokens.output += meta.tokens.output;
+            }
         });
     }
 
@@ -256,6 +273,17 @@ export class GuiServer extends EventEmitter {
         </div>
 
         <div class="flex items-center gap-6">
+            <!-- Total Tokens -->
+            <div class="flex items-center gap-3 px-4 py-2 rounded-xl bg-slate-950/60 border border-slate-900">
+                <div class="text-right">
+                    <p class="text-[10px] uppercase tracking-wider text-slate-500">Total Tokens</p>
+                    <p class="text-sm font-bold text-purple-300 font-mono" id="tokens-value">In: 0 | Out: 0</p>
+                </div>
+                <div class="w-8 h-8 rounded-full bg-purple-500/10 flex items-center justify-center text-purple-400">
+                    <i data-lucide="cpu" class="w-4.5 h-4.5"></i>
+                </div>
+            </div>
+
             <!-- Budget status -->
             <div class="flex items-center gap-3 px-4 py-2 rounded-xl bg-slate-950/60 border border-slate-900">
                 <div class="text-right">
@@ -359,7 +387,16 @@ export class GuiServer extends EventEmitter {
     </footer>
 
     <script>
-        lucide.createIcons();
+        function renderIcons() {
+            if (typeof lucide !== "undefined" && lucide.createIcons) {
+                try {
+                    lucide.createIcons();
+                } catch (e) {
+                    console.error("Lucide rendering failed:", e);
+                }
+            }
+        }
+        renderIcons();
 
         let currentMessagesCount = 0;
         let currentLogsCount = 0;
@@ -376,6 +413,7 @@ export class GuiServer extends EventEmitter {
         const stagedContainer = document.getElementById("staged-container");
         const actionBar = document.getElementById("action-bar");
         const thinkingIndicator = document.getElementById("thinking-indicator");
+        const tokensVal = document.getElementById("tokens-value");
 
         chatForm.addEventListener("submit", (e) => {
             e.preventDefault();
@@ -418,6 +456,54 @@ export class GuiServer extends EventEmitter {
                 .replace(/'/g, "&#039;");
         }
 
+        function getFilename(fullPath) {
+            if (!fullPath) return "file";
+            const parts = fullPath.split("/");
+            const lastPart = parts[parts.length - 1];
+            return lastPart.split("\\\\").pop() || "file";
+        }
+
+        function getFriendlyLog(line) {
+            if (line.includes("✓ create_file")) {
+                const match = line.match(/"TargetFile":"([^"]+)"/) || line.match(/"path":"([^"]+)"/);
+                const file = match ? getFilename(match[1]) : "file";
+                return \`<span class="text-emerald-400">📁 Created file:</span> <b>\${file}</b>\`;
+            }
+            if (line.includes("✓ edit_file") || line.includes("✓ replace_file_content") || line.includes("✓ multi_replace_file_content")) {
+                const match = line.match(/"TargetFile":"([^"]+)"/) || line.match(/"path":"([^"]+)"/);
+                const file = match ? getFilename(match[1]) : "file";
+                return \`<span class="text-indigo-400">📝 Updated file:</span> <b>\${file}</b>\`;
+            }
+            if (line.includes("✓ view_file") || line.includes("✓ read_file")) {
+                const match = line.match(/"AbsolutePath":"([^"]+)"/) || line.match(/"path":"([^"]+)"/);
+                const file = match ? getFilename(match[1]) : "file";
+                return \`<span class="text-sky-400">📖 Examined file:</span> <b>\${file}</b>\`;
+            }
+            if (line.includes("✓ run_command") || line.includes("✓ execute_command")) {
+                const match = line.match(/"CommandLine":"([^"]+)"/) || line.match(/"command":"([^"]+)"/);
+                const cmd = match ? match[1] : "command";
+                return \`<span class="text-amber-400">💻 Executed command:</span> <code class="bg-slate-900/80 px-1.5 py-0.5 rounded text-amber-300 font-mono text-[10px]">\${cmd}</code>\`;
+            }
+            if (line.includes("✓ delete_file")) {
+                const match = line.match(/"TargetFile":"([^"]+)"/) || line.match(/"path":"([^"]+)"/);
+                const file = match ? getFilename(match[1]) : "file";
+                return \`<span class="text-rose-400">🗑️ Removed file:</span> <b>\${file}</b>\`;
+            }
+            if (line.includes("✓ get_repo_map") || line.includes("✓ list_dir")) {
+                return \`<span class="text-purple-400">🔍 Analyzed project folder structure</span>\`;
+            }
+            if (line.includes("✓")) {
+                return \`<span class="text-emerald-400">\${line}</span>\`;
+            }
+            if (line.includes("⚠️")) {
+                return \`<span class="text-yellow-400">\${line}</span>\`;
+            }
+            if (line.includes("❌")) {
+                return \`<span class="text-red-400">\${line}</span>\`;
+            }
+            return line;
+        }
+
         function formatMessage(msg) {
             const isUser = msg.sender === "user";
             const avatarColor = isUser ? "bg-indigo-600/20 text-indigo-400 border-indigo-500/30" : "bg-purple-600/20 text-purple-400 border-purple-500/30";
@@ -425,22 +511,35 @@ export class GuiServer extends EventEmitter {
             const alignClass = isUser ? "flex-row-reverse" : "";
             const bubbleClass = isUser ? "bg-indigo-600/10 border-indigo-500/20 text-slate-100" : "bg-slate-900/60 border-slate-800/80 text-slate-200";
 
-            return \`
-                <div class="flex gap-3 \\\${alignClass}">
-                    <div class="w-8 h-8 rounded-full \\\${avatarColor} border flex items-center justify-center flex-shrink-0">
-                        <i data-lucide="\\\${icon}" class="w-4 h-4"></i>
+            let tokenHtml = "";
+            if (msg.tokens && msg.cost !== undefined) {
+                tokenHtml = \`
+                    <div class="mt-2.5 pt-2 border-t border-slate-800/65 flex items-center gap-4 text-[10px] text-slate-400 font-mono">
+                        <span class="flex items-center gap-1"><i data-lucide="arrow-down-left" class="w-3.5 h-3.5 text-slate-500"></i> In: \${msg.tokens.input}</span>
+                        <span class="flex items-center gap-1"><i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-slate-500"></i> Out: \${msg.tokens.output}</span>
+                        <span class="text-indigo-400 font-semibold">💰 Cost: $\${msg.cost.toFixed(6)}</span>
                     </div>
-                    <div class="flex-1 \\\${bubbleClass} border rounded-2xl px-4 py-3 max-w-[85%] text-sm leading-relaxed">
-                        <div class="whitespace-pre-wrap">\\\${msg.text}</div>
-                        <span class="text-[9px] text-slate-500 block text-right mt-1.5">\\\${msg.timestamp}</span>
+                \`;
+            }
+
+            return \`
+                <div class="flex gap-3 \${alignClass}">
+                    <div class="w-8 h-8 rounded-full \${avatarColor} border flex items-center justify-center flex-shrink-0">
+                        <i data-lucide="\${icon}" class="w-4 h-4"></i>
+                    </div>
+                    <div class="flex-1 \${bubbleClass} border rounded-2xl px-4 py-3 max-w-[85%] text-sm leading-relaxed">
+                        <div class="whitespace-pre-wrap">\${msg.text}</div>
+                        \${tokenHtml}
+                        <span class="text-[9px] text-slate-500 block text-right mt-1.5">\${msg.timestamp}</span>
                     </div>
                 </div>
             \`;
         }
 
         function updateStateUI(state) {
-            // Budget & attempt counts
+            // Budget, tokens & attempt counts
             budgetVal.textContent = \`$\${state.budgetUsed.toFixed(4)} / $\${state.maxBudget.toFixed(2)}\`;
+            tokensVal.textContent = \`In: \${state.totalTokens.input} | Out: \${state.totalTokens.output}\`;
             attemptBadge.textContent = \`Attempt: \${state.attempts}/\${state.maxAttempts}\`;
 
             // Status indicators
@@ -500,7 +599,7 @@ export class GuiServer extends EventEmitter {
                 }
                 currentMessagesCount = state.messages.length;
                 chatMessages.scrollTop = chatMessages.scrollHeight;
-                lucide.createIcons();
+                renderIcons();
             }
 
             // Append new agent logs to chat messages as structured logs if running
@@ -515,15 +614,7 @@ export class GuiServer extends EventEmitter {
                     addedAny = true;
                     
                     const lineDiv = document.createElement("div");
-                    if (line.includes("✓")) {
-                        lineDiv.innerHTML = \`<span class="text-green-400 font-bold">\${line.slice(0, 3)}</span>\${line.slice(3)}\`;
-                    } else if (line.includes("⚠️")) {
-                        lineDiv.innerHTML = \`<span class="text-yellow-400">\${line}</span>\`;
-                    } else if (line.includes("❌")) {
-                        lineDiv.innerHTML = \`<span class="text-red-400">\${line}</span>\`;
-                    } else {
-                        lineDiv.textContent = line;
-                    }
+                    lineDiv.innerHTML = getFriendlyLog(line);
                     logsPane.appendChild(lineDiv);
                 }
                 
@@ -538,7 +629,7 @@ export class GuiServer extends EventEmitter {
                     wrapDiv.appendChild(logsPane);
                     chatMessages.appendChild(wrapDiv);
                     chatMessages.scrollTop = chatMessages.scrollHeight;
-                    lucide.createIcons();
+                    renderIcons();
                 }
                 
                 currentLogsCount = state.logs.length;
@@ -584,7 +675,7 @@ export class GuiServer extends EventEmitter {
                 });
                 stagedContainer.innerHTML = html;
             }
-            lucide.createIcons();
+            renderIcons();
         }
 
         // SSE Connection
