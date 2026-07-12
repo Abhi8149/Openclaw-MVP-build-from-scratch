@@ -8,6 +8,11 @@ export type ActionType =
 
 export type ActionStatus = 'pending' | 'executed' | 'approved' | 'rejected';
 
+// safe: read-only, already auto-executes and never reaches approval.
+// low: reversible, low-blast-radius mutations (new file, small edit, empty folder).
+// high: destructive or hard-to-predict (deletes, sensitive files, large edits, shell commands).
+export type RiskTier = 'safe' | 'low' | 'high';
+
 export interface ActionLog {
   id: string;
   timestamp: Date;
@@ -23,6 +28,11 @@ export interface ActionLog {
   };
   status: ActionStatus;
   userApproved?: boolean;
+  riskTier?: RiskTier;
+  riskReason?: string;
+  // Set for the small set of high-risk shell commands dangerous enough that
+  // the approval UI should require typing "yes" rather than a menu pick.
+  requiresTypedConfirmation?: boolean;
 }
 
 export interface AgentConfig {

@@ -18,6 +18,9 @@ export class ActionTracker{
             details:{...entry.details},
             status:entry.status,
             userApproved:entry.userApproved,
+            riskTier:entry.riskTier,
+            riskReason:entry.riskReason,
+            requiresTypedConfirmation:entry.requiresTypedConfirmation,
         };
         this.actions.push(action);
         return action;

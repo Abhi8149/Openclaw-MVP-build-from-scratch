@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import type { AgentConfig, ActionLog } from "./types";
 import { ActionTracker } from "./action-tracker";
+import { classifyFileMutation, classifyShellCommand } from "./risk-classifier";
 
 const TEXT_EXT = new Set([
     ".ts",
@@ -165,11 +166,15 @@ export class ToolExecutor {
         }
         this.deleted.delete(key);
         this.overlay.set(key, content);
+        const risk = classifyFileMutation("file_create", key, undefined, content);
         this.tracker.log({
             type: "file_create",
             path: key,
             details: { after: content },
             status: "pending",
+            riskTier: risk.tier,
+            riskReason: risk.reason,
+            requiresTypedConfirmation: risk.requiresTypedConfirmation,
         });
         return `Staged new file: ${key}`;
     }
@@ -183,11 +188,15 @@ export class ToolExecutor {
             throw new Error(`modify_file: file not found: ${rel}`);
         const key = this.norm(rel);
         this.overlay.set(key, content);
+        const risk = classifyFileMutation("file_modify", key, before, content);
         this.tracker.log({
             type: "file_modify",
             path: key,
             details: { before, after: content },
             status: "pending",
+            riskTier: risk.tier,
+            riskReason: risk.reason,
+            requiresTypedConfirmation: risk.requiresTypedConfirmation,
         });
         return `Staged update: ${key}`;
     }
@@ -202,11 +211,15 @@ export class ToolExecutor {
         const key = this.norm(rel);
         this.overlay.delete(key);
         this.deleted.add(key);
+        const risk = classifyFileMutation("file_delete", key, before, undefined);
         this.tracker.log({
             type: "file_delete",
             path: key,
             details: { before },
             status: "pending",
+            riskTier: risk.tier,
+            riskReason: risk.reason,
+            requiresTypedConfirmation: risk.requiresTypedConfirmation,
         });
         return `Staged delete: ${key}`;
     }
@@ -216,11 +229,15 @@ export class ToolExecutor {
             throw new Error("Folder creation disabled");
         this.assertNotExcluded(rel, "create_folder");
         const key = this.norm(rel);
+        const risk = classifyFileMutation("folder_create", key, undefined, undefined);
         this.tracker.log({
             type: "folder_create",
             path: key,
             details: { after: key },
             status: "pending",
+            riskTier: risk.tier,
+            riskReason: risk.reason,
+            requiresTypedConfirmation: risk.requiresTypedConfirmation,
         });
         return `Staged folder: ${key}`;
     }
@@ -356,11 +373,15 @@ export class ToolExecutor {
     queueShell(command: string): string {
         if (!this.config.tools.allowShellExecution)
             throw new Error("Shell execution disabled");
+        const risk = classifyShellCommand(command);
         this.tracker.log({
             type: "tool_execute",
             path: "shell",
             details: { command, toolName: "execute_shell" },
             status: "pending",
+            riskTier: risk.tier,
+            riskReason: risk.reason,
+            requiresTypedConfirmation: risk.requiresTypedConfirmation,
         });
         return `Shell queued: ${command}`;
     }
@@ -545,13 +566,17 @@ export class ToolExecutor {
 
     // Stage the modification using the existing overlay map
     this.overlay.set(key, currentContent);
-    
+
     // Log the action to the tracker so diffs can be generated
+    const risk = classifyFileMutation("file_modify", key, originalContent, currentContent);
     this.tracker.log({
         type: "file_modify",
         path: key,
         details: { before: originalContent, after: currentContent },
         status: "pending",
+        riskTier: risk.tier,
+        riskReason: risk.reason,
+        requiresTypedConfirmation: risk.requiresTypedConfirmation,
     });
 
     return `Staged targeted edits for: ${key}`;
