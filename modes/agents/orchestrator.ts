@@ -7,16 +7,16 @@ import { createAgentTool } from "./agent-tools";
 import { stepCountIs, ToolLoopAgent } from "ai";
 import { getAgentModel, MODEL_PRICING } from "../../ai";
 import { renderTerminalMarkdown } from "../../tui/terminal-md";
-import { runApprovalFlow } from "./approval";
+import { runApprovalFlow, groupPending } from "./approval";
 import { exec } from "node:child_process";
 import { GitHelper } from "../../utils/git";
 import { runProjectChecks } from "../../utils/checker";
+import { GuiServer } from "./gui-server";
 
-
-export async function runAgentMode() {
+export async function runAgentMode(options?: { gui?: boolean; budget?: number; goal?: string; guiServer?: GuiServer }) {
     console.log(chalk.bold("\n Agent Mode\n"));
 
-    const goal = await text({
+    const goal = options?.goal ?? await text({
         message: "What would you like the agent to do?",
         placeholder: " Concrete task for this codebase...",
     });
@@ -24,9 +24,41 @@ export async function runAgentMode() {
     if (isCancel(goal) || !goal.trim()) return;
 
     const config = defaultAgentConfig();
+    if (options?.budget !== undefined) {
+        config.maxBudget = options.budget;
+    }
+
     const tracker = new ActionTracker();
     const executor = new ToolExecutor(tracker, config);
     const tools = createAgentTool(executor);
+
+    let guiServer: GuiServer | null = null;
+    if (options?.gui) {
+        if (options.guiServer) {
+            guiServer = options.guiServer;
+            guiServer.updateState((s) => {
+                s.goal = goal.trim();
+                s.status = "running";
+                s.maxAttempts = config.maxSelfHealingAttempts;
+                s.maxBudget = config.maxBudget;
+                s.logs = [];
+                s.stagedGroups = [];
+            });
+        } else {
+            guiServer = new GuiServer();
+            const url = await guiServer.start(8000);
+            console.log(chalk.green(`\n🖥️  Visual Web Companion active at: ${url}\n`));
+            guiServer.updateState((s) => {
+                s.goal = goal.trim();
+                s.status = "running";
+                s.maxAttempts = config.maxSelfHealingAttempts;
+                s.maxBudget = config.maxBudget;
+                s.logs = [];
+                s.stagedGroups = [];
+                s.messages = [];
+            });
+        }
+    }
 
     const agent = new ToolLoopAgent({
         model: getAgentModel(),
@@ -39,13 +71,20 @@ export async function runAgentMode() {
     });
 
     let attempts = 0;
-    const maxAttempts = 3;
+    const maxAttempts = config.maxSelfHealingAttempts;
     let feedback = "";
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
 
     while (attempts < maxAttempts) {
         attempts++;
+        if (guiServer) {
+            guiServer.updateState((s) => {
+                s.attempts = attempts;
+                s.logs.push(`\n[Attempt ${attempts}/${maxAttempts}] Executing turn...`);
+            });
+        }
+
         const prompt = feedback
             ? `Your previous changes caused errors. Please fix these issues:\n${feedback}\n\nOriginal Goal: ${goal}`
             : goal.trim();
@@ -55,11 +94,17 @@ export async function runAgentMode() {
             onStepFinish: ({ toolCalls }) => {
                 for (const tc of toolCalls) {
                     const preview = JSON.stringify(tc.input).slice(0, 160);
+                    const logMsg = `  ✓ ${tc.toolName} ${preview}${preview.length >= 160 ? "..." : ""}`;
                     console.log(
                         chalk.green("  ✓"),
                         chalk.bold(String(tc.toolName)),
                         chalk.dim(preview + (preview.length >= 160 ? "..." : "")),
-                    )
+                    );
+                    if (guiServer) {
+                        guiServer.updateState((s) => {
+                            s.logs.push(logMsg);
+                        });
+                    }
                 }
             }
         });
@@ -67,6 +112,32 @@ export async function runAgentMode() {
         if (result.usage) {
             totalPromptTokens += result.usage.inputTokens ?? 0;
             totalCompletionTokens += result.usage.outputTokens ?? 0;
+        }
+
+        const modelName = process.env.OPENROUTER_MODEL || "free";
+        const rate = MODEL_PRICING[modelName] || { input: 0, output: 0 };
+        const currentCost = ((totalPromptTokens * rate.input) + (totalCompletionTokens * rate.output)) / 1_000_000;
+
+        if (guiServer) {
+            guiServer.updateState((s) => {
+                s.budgetUsed = currentCost;
+            });
+        }
+
+        if (currentCost > config.maxBudget) {
+            const errMsg = `❌ Budget exceeded: Spent $${currentCost.toFixed(6)} which exceeds limit of $${config.maxBudget.toFixed(2)}`;
+            console.log(chalk.red(`\n${errMsg}\n`));
+            if (guiServer) {
+                guiServer.updateState((s) => {
+                    s.status = "failed";
+                    s.logs.push(errMsg);
+                });
+                if (!options?.guiServer) {
+                    await new Promise((r) => setTimeout(r, 2000));
+                    guiServer.stop();
+                }
+            }
+            return executor.clearStaging();
         }
 
         // Run checks on staged files temporarily applied to the disk
@@ -79,11 +150,24 @@ export async function runAgentMode() {
         }
 
         if (check.passed) {
-            if (result.text?.trim()) console.log(renderTerminalMarkdown(result.text));
+            if (result.text?.trim()) {
+                const md = renderTerminalMarkdown(result.text);
+                console.log(md);
+                if (guiServer) {
+                    guiServer.addAgentMessage(result.text);
+                }
+            }
             break; // Success!
         } else {
-            console.log(chalk.yellow(`\n⚠️ Iteration ${attempts} failed checks. Let's fix it...\n`));
+            const failMsg = `⚠️ Iteration ${attempts} failed checks. Let's fix it...`;
+            console.log(chalk.yellow(`\n${failMsg}\n`));
             feedback = check.errorOutput || "Unknown compilation error";
+            if (guiServer) {
+                guiServer.updateState((s) => {
+                    s.logs.push(failMsg);
+                    s.logs.push(feedback);
+                });
+            }
         }
     }
 
@@ -98,16 +182,64 @@ export async function runAgentMode() {
         console.log(chalk.dim(`   Estimated Cost: $${cost.toFixed(6)}`));
     }
 
-    const ok = await runApprovalFlow(tracker);
-    if (!ok) return executor.clearStaging();
+    let ok = false;
+    if (guiServer) {
+        const pending = tracker.getPendingMutations();
+        const groups = groupPending(pending).map((g) => ({
+            label: g.label,
+            tier: g.tier,
+            reason: g.reason,
+            patch: g.patch,
+        }));
+        guiServer.updateState((s) => {
+            s.stagedGroups = groups;
+        });
+        ok = await guiServer.waitForUserApproval();
+    } else {
+        ok = await runApprovalFlow(tracker);
+    }
+
+    if (!ok) {
+        if (guiServer) {
+            guiServer.updateState((s) => {
+                s.status = "failed";
+                s.logs.push("❌ Staged changes rejected by user.");
+            });
+            if (!options?.guiServer) {
+                await new Promise((r) => setTimeout(r, 2000));
+                guiServer.stop();
+            }
+        }
+        return executor.clearStaging();
+    }
 
     const { errors } = executor.applyApprovedFromTracker();
 
     if (errors.length) {
         console.log(chalk.red("\nSome operations reported errors:\n"));
         for (const e of errors) console.log(chalk.red(`  • ${e}`));
+        if (guiServer) {
+            guiServer.updateState((s) => {
+                s.status = "failed";
+                for (const e of errors) s.logs.push(`❌ Error: ${e}`);
+            });
+            if (!options?.guiServer) {
+                await new Promise((r) => setTimeout(r, 2000));
+                guiServer.stop();
+            }
+        }
     } else {
         console.log(chalk.green('\n✓ Applied.\n'));
+        if (guiServer) {
+            guiServer.updateState((s) => {
+                s.status = "success";
+                s.logs.push("✓ Staged changes successfully approved and applied.");
+            });
+            if (!options?.guiServer) {
+                await new Promise((r) => setTimeout(r, 2000));
+                guiServer.stop();
+            }
+        }
 
         // AUTO-COMMIT approved changes if inside Git repository
         if (GitHelper.isGitRepo()) {
@@ -116,5 +248,5 @@ export async function runAgentMode() {
         }
     }
 
-    executor.clearStaging()
+    executor.clearStaging();
 }

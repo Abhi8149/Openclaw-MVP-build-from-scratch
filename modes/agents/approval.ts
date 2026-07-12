@@ -6,7 +6,7 @@ import { RISK_RANK } from "./risk-classifier";
 import { composeBeforeAfter, formatPatch } from "./diff-view";
 import { renderTerminalMarkdown } from "../../tui/terminal-md";
 
-interface ReviewGroup {
+export interface ReviewGroup {
     label: string;
     actionIds: string[];
     patch: string | null;
@@ -42,7 +42,7 @@ function riskBadge(tier: RiskTier): string {
     return chalk.bgBlue.white.bold(" safe ");
 }
 
-function groupPending(pending: ActionLog[]): ReviewGroup[] {
+export function groupPending(pending: ActionLog[]): ReviewGroup[] {
     const byPath = new Map<string, ActionLog[]>();
     const shells: ActionLog[] = [];
 

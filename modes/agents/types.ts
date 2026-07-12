@@ -45,6 +45,8 @@ export interface AgentConfig {
     allowFileCreation: boolean;
     allowFolderCreation: boolean;
   };
+  maxBudget: number; // Max budget in USD
+  maxSelfHealingAttempts: number; // Max attempts to self-heal compiler/test errors
 }
 
 export const defaultAgentConfig = (): AgentConfig => ({
@@ -65,6 +67,8 @@ export const defaultAgentConfig = (): AgentConfig => ({
     allowFileCreation: true,
     allowFolderCreation: true,
   },
+  maxBudget: 1.00, // Default budget $1.00 USD
+  maxSelfHealingAttempts: 3,
 });
 
 export function isMutationType(t: ActionType): boolean {

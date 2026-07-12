@@ -132,4 +132,83 @@ describe("GitHelper checkpoints", () => {
             fs.rmSync(dir, { recursive: true, force: true });
         }
     });
+
+    test("resolveParentHash returns the previous commit's hash", () => {
+        const dir = makeRepo();
+        try {
+            writeFile(dir, "v1");
+            GitHelper.commitApprovedChanges("first goal", dir);
+            const [first] = GitHelper.listCheckpoints(20, dir);
+
+            writeFile(dir, "v2");
+            GitHelper.commitApprovedChanges("second goal", dir);
+            const [second] = GitHelper.listCheckpoints(20, dir);
+
+            const parentOfSecond = GitHelper.resolveParentHash(second!.hash, dir);
+            expect(parentOfSecond).toBe(first!.hash);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("resolveParentHash returns null for the very first commit in the repo", () => {
+        const dir = makeRepo();
+        try {
+            writeFile(dir, "v1");
+            GitHelper.commitApprovedChanges("first goal", dir);
+            const [first] = GitHelper.listCheckpoints(20, dir);
+
+            expect(GitHelper.resolveParentHash(first!.hash, dir)).toBeNull();
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("resolveParentHash returns null for an invalid hash instead of throwing", () => {
+        const dir = makeRepo();
+        try {
+            writeFile(dir, "v1");
+            GitHelper.commitApprovedChanges("first goal", dir);
+
+            expect(GitHelper.resolveParentHash("; rm -rf .", dir)).toBeNull();
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("undoing a checkpoint (reset to its parent) removes what that turn added — reproduces the reported bug", () => {
+        // Mirrors the real scenario: turn 1 does nothing to this file, turn 2
+        // creates a new file (like "Fullfledgereadme.md"). Picking turn 2 to
+        // undo must make that file disappear again, not leave it in place.
+        const dir = makeRepo();
+        try {
+            writeFile(dir, "unrelated content");
+            GitHelper.commitApprovedChanges("unrelated turn", dir);
+
+            fs.writeFileSync(path.join(dir, "Fullfledgereadme.md"), "# readme\n", "utf8");
+            GitHelper.commitApprovedChanges(
+                "I want a readme file named Fullfledgereadme.md",
+                dir,
+            );
+
+            expect(fs.existsSync(path.join(dir, "Fullfledgereadme.md"))).toBe(true);
+
+            const [readmeCheckpoint] = GitHelper.listCheckpoints(20, dir);
+            expect(readmeCheckpoint!.goal).toBe("I want a readme file named Fullfledgereadme.md");
+
+            const parentHash = GitHelper.resolveParentHash(readmeCheckpoint!.hash, dir);
+            expect(parentHash).not.toBeNull();
+
+            const result = GitHelper.rewindToCheckpoint(parentHash!, dir);
+            expect(result.success).toBe(true);
+
+            expect(fs.existsSync(path.join(dir, "Fullfledgereadme.md"))).toBe(false);
+
+            const checkpointsAfter = GitHelper.listCheckpoints(20, dir);
+            expect(checkpointsAfter.length).toBe(1);
+            expect(checkpointsAfter[0]!.goal).toBe("unrelated turn");
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    }, 20000);
 });

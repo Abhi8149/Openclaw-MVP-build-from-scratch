@@ -72,9 +72,15 @@ export class GitHelper {
         try {
             const out = execFileSync(
                 "git",
-                ["log", "-n", String(Math.max(1, limit)), "--pretty=format:%H%x1f%h%x1f%ct%x1f%s"],
+                [
+                    "log",
+                    "--grep=" + CHECKPOINT_PREFIX,
+                    "-n",
+                    String(Math.max(1, limit)),
+                    "--pretty=format:%H%x1f%h%x1f%ct%x1f%s",
+                ],
                 { cwd, encoding: "utf8" },
-            );
+            ).replace(/\r\n/g, "\n");
             if (!out.trim()) return [];
 
             const checkpoints: Checkpoint[] = [];
@@ -96,11 +102,27 @@ export class GitHelper {
         }
     }
 
+    // Resolves the parent of a commit, e.g. so "undo checkpoint X" can reset
+    // to the state right *before* X's changes instead of X's own state.
+    // Returns null if the hash is a root commit with no parent (nothing to
+    // undo to).
+    static resolveParentHash(hash: string, cwd?: string): string | null {
+        if (!HASH_RE.test(hash)) return null;
+        try {
+            return execFileSync("git", ["rev-parse", "--verify", "--quiet", `${hash}^`], {
+                cwd,
+                encoding: "utf8",
+            }).trim();
+        } catch {
+            return null;
+        }
+    }
+
     // Hard-resets the branch pointer and working tree to a specific
-    // checkpoint commit. Destructive: any commits made after it, and any
-    // currently uncommitted changes, are removed from the working tree
-    // immediately (still recoverable via `git reflog` for git's default gc
-    // window, but not from within this tool).
+    // commit. Destructive: any commits made after it, and any currently
+    // uncommitted changes, are removed from the working tree immediately
+    // (still recoverable via `git reflog` for git's default gc window, but
+    // not from within this tool).
     static rewindToCheckpoint(hash: string, cwd?: string): { success: boolean; error?: string } {
         if (!HASH_RE.test(hash)) {
             return { success: false, error: `Refusing to reset to an invalid commit hash: ${hash}` };

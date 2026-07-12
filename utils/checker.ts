@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 
 export interface DiagnosticResult {
     passed: boolean;
@@ -7,9 +9,11 @@ export interface DiagnosticResult {
 
 export function runProjectChecks(cwd: string): DiagnosticResult {
     // 1. Run TypeScript typecheck (if tsconfig exists)
-    const tsc = spawnSync("bunx", ["tsc", "--noEmit"], { cwd, encoding: "utf8" });
-    if (tsc.status !== 0) {
-        return { passed: false, errorOutput: `TypeScript Errors:\n${tsc.stdout || tsc.stderr}` };
+    if (fs.existsSync(path.join(cwd, "tsconfig.json"))) {
+        const tsc = spawnSync("bunx", ["tsc", "--noEmit"], { cwd, encoding: "utf8" });
+        if (tsc.status !== 0) {
+            return { passed: false, errorOutput: `TypeScript Errors:\n${tsc.stdout || tsc.stderr}` };
+        }
     }
 
     // 2. Run Test suite (if test command is available in package.json)

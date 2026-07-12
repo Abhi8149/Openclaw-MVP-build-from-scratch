@@ -28,7 +28,7 @@ export async function runRewindMenu(): Promise<void> {
     }
 
     const choice = await select({
-        message: "Pick a checkpoint to rewind to",
+        message: "Pick a turn to undo (this also undoes every turn after it)",
         options: [
             ...checkpoints.map((c) => ({
                 value: c.hash,
@@ -47,15 +47,28 @@ export async function runRewindMenu(): Promise<void> {
     const target = checkpoints.find((c) => c.hash === choice);
     if (!target) return;
 
+    // "Undo this turn" means resetting to its parent commit, not the
+    // checkpoint itself — the checkpoint commit's tree already contains
+    // that turn's own changes, so resetting to it would leave them in place.
+    const parentHash = GitHelper.resolveParentHash(target.hash);
+    if (parentHash === null) {
+        console.log(
+            chalk.red(
+                "\nThis is the very first checkpoint in this repo's history — there's nothing before it to rewind to.\n",
+            ),
+        );
+        return;
+    }
+
     const hasUncommitted = GitHelper.hasUncommittedChanges();
 
-    console.log(chalk.yellow("\n⚠ This will hard-reset your working tree to this checkpoint."));
+    console.log(chalk.yellow(`\n⚠ This will undo "${target.goal}" and every turn after it.`));
     console.log(
         chalk.yellow(
-            `  Any commits made after "${target.goal}" will be removed from the branch history`,
+            "  Those commits will be removed from the branch history (recoverable via `git reflog`",
         ),
     );
-    console.log(chalk.yellow("  (recoverable via `git reflog` for a while, but not from this tool)."));
+    console.log(chalk.yellow("  for a while, but not from this tool)."));
     if (hasUncommitted) {
         console.log(
             chalk.red("  You also have uncommitted changes right now — those will be discarded too."),
@@ -71,9 +84,9 @@ export async function runRewindMenu(): Promise<void> {
         return;
     }
 
-    const result = GitHelper.rewindToCheckpoint(target.hash);
+    const result = GitHelper.rewindToCheckpoint(parentHash);
     if (result.success) {
-        console.log(chalk.green(`\n✓ Rewound to: ${target.goal} (${target.shortHash})\n`));
+        console.log(chalk.green(`\n✓ Undid "${target.goal}" and everything after it.\n`));
     } else {
         console.log(chalk.red(`\nRewind failed: ${result.error}\n`));
     }

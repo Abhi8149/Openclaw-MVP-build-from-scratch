@@ -11,6 +11,7 @@ import { renderTerminalMarkdown } from "../../tui/terminal-md.ts";
 import { generatePlan } from "./planner.ts";
 import type { Planstep } from "./types.ts";
 import { createWebTools } from "./web-tool";
+import { GitHelper } from "../../utils/git";
 import { printPlan, selectSteps } from "./selection.ts";
 
 function stepPrompt(goal: string, step: Planstep): string {
@@ -71,6 +72,12 @@ export async function runPlanMode(): Promise<void> {
         for (const e of errors) console.log(chalk.red(`  • ${e}`));
     } else {
         console.log(chalk.green('\n✓ Applied.\n'));
+
+        // AUTO-COMMIT approved changes if inside Git repository
+        if (GitHelper.isGitRepo()) {
+            GitHelper.commitApprovedChanges(goal.trim());
+            console.log(chalk.dim("Staged files auto-committed to git history."));
+        }
     }
     executor.clearStaging();
 

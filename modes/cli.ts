@@ -5,7 +5,7 @@ import { runAskMode } from "./ask/orchestrator";
 import { runPlanMode } from "./plan/orchestrator";
 import { runRewindMenu } from "./agents/rewind";
 
-export async function runCliMode() {
+export async function runCliMode(options?: { gui?: boolean; budget?: number }) {
     while (true) {
         const mode = await select({
             message: "Choose CLI sub-mode",
@@ -21,7 +21,7 @@ export async function runCliMode() {
         if (isCancel(mode) || mode === "back") return;
 
         if (mode === "agent") {
-            await runAgentMode();
+            await runAgentMode(options);
         }
         if (mode === "ask") {
             await runAskMode();
