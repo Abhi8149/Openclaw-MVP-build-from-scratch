@@ -444,6 +444,8 @@ export class ToolExecutor {
   applyApprovedFromTracker(): { errors: string[] } {
     const errors: string[] = [];
     const all = [...this.tracker.getActions()];
+    console.log(`🔍 [Debug] applyApprovedFromTracker: total actions in tracker: ${all.length}`);
+    console.log(`🔍 [Debug] Action statuses: ${all.map(a => `${a.path}:${a.type}:${a.status}`).join(', ')}`);
 
     for (const a of all.filter(
       (x) => x.type === "folder_create" && x.status === "approved",
@@ -465,19 +467,28 @@ export class ToolExecutor {
       )
       .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
+    console.log(`🔍 [Debug] Approved file operations: ${fileOps.length}`);
+
     const lastByPath = new Map<string, ActionLog>();
     for (const a of fileOps) lastByPath.set(this.norm(a.path), a);
 
+    console.log(`🔍 [Debug] Unique paths to write: ${lastByPath.size}`);
+
     for (const [p, a] of lastByPath) {
       try {
-        if (a.type === "file_delete")
+        if (a.type === "file_delete") {
           fs.rmSync(this.resolveSafe(p), { force: true });
-        else {
+          console.log(`🔍 [Debug] Deleted: ${p}`);
+        } else {
           const target = this.resolveSafe(p);
+          const contentLen = (a.details.after ?? "").length;
+          console.log(`🔍 [Debug] Writing ${contentLen} chars to: ${target}`);
           fs.mkdirSync(path.dirname(target), { recursive: true });
           fs.writeFileSync(target, a.details.after ?? "", "utf8");
+          console.log(`🔍 [Debug] Successfully wrote: ${target}`);
         }
       } catch (e) {
+        console.log(`🔍 [Debug] ERROR writing ${p}: ${e}`);
         errors.push(String(e));
       }
     }

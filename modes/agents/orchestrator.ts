@@ -222,6 +222,7 @@ async function applyAccumulatedChanges(
     guiServer: GuiServer | null,
     options?: { guiServer?: GuiServer },
 ): Promise<void> {
+    console.log(chalk.dim(`\n🔍 [Debug] applyAccumulatedChanges called. Pending mutations: ${tracker.getPendingMutations().length}`));
     let ok = false;
 
     if (guiServer) {
@@ -240,6 +241,8 @@ async function applyAccumulatedChanges(
         ok = await runApprovalFlow(tracker);
     }
 
+    console.log(chalk.dim(`🔍 [Debug] Approval result: ok=${ok}`));
+
     if (!ok) {
         console.log(chalk.yellow("\n❌ Staged changes rejected.\n"));
         if (guiServer) {
@@ -252,7 +255,9 @@ async function applyAccumulatedChanges(
         return;
     }
 
+    console.log(chalk.dim(`🔍 [Debug] Calling applyApprovedFromTracker...`));
     const { errors } = executor.applyApprovedFromTracker();
+    console.log(chalk.dim(`🔍 [Debug] applyApprovedFromTracker returned. Errors: ${errors.length}`));
 
     if (errors.length) {
         console.log(chalk.red("\nSome operations reported errors:\n"));
