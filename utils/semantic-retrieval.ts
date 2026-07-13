@@ -57,39 +57,53 @@ function cosineSimilarity(vecA: number[], vecB: number[]): number {
 }
 
 async function fetchEmbeddingFromAPI(text: string, apiKey: string): Promise<number[]> {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), 8000); // 8-second timeout limit
+    // List of models to try in order of preference
+    const modelsToTry = [
+        "nvidia/llama-nemotron-embed-vl-1b-v2:free",
+        "openai/text-embedding-3-small"
+    ];
 
-    try {
-        const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${apiKey}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                model: "nomic-ai/nomic-embed-text",
-                input: text.slice(0, 8000) // Truncate to fit model input window limit
-            }),
-            signal: controller.signal
-        });
+    let lastError: any = null;
 
-        clearTimeout(id);
+    for (const model of modelsToTry) {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), 8000); // 8-second timeout limit
 
-        if (!res.ok) {
-            throw new Error(`Embedding API returned status ${res.status}`);
+        try {
+            const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${apiKey}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    model: model,
+                    input: text.slice(0, 8000) // Truncate to fit model input window limit
+                }),
+                signal: controller.signal
+            });
+
+            clearTimeout(id);
+
+            if (!res.ok) {
+                const bodyText = await res.text().catch(() => "");
+                throw new Error(`Embedding API for ${model} returned status ${res.status}: ${bodyText}`);
+            }
+
+            const data = (await res.json()) as any;
+            if (!data.data?.[0]?.embedding) {
+                throw new Error(`Invalid response shape from Embeddings API for ${model}`);
+            }
+
+            return data.data[0].embedding;
+        } catch (err) {
+            clearTimeout(id);
+            lastError = err;
+            // Continue loop to try next model
         }
-
-        const data = (await res.json()) as any;
-        if (!data.data?.[0]?.embedding) {
-            throw new Error("Invalid response shape from Embeddings API");
-        }
-
-        return data.data[0].embedding;
-    } catch (err) {
-        clearTimeout(id);
-        throw err;
     }
+
+    throw lastError || new Error("Failed to fetch embedding from all attempted models");
 }
 
 function loadCache(codebasePath: string): Record<string, CacheItem> {
@@ -141,6 +155,41 @@ function scanFiles(dir: string, baseDir: string, exclude: string[]): string[] {
     }
     return results;
 }
+
+/**
+ * Extract File Paths from User Query
+ * 
+ * Scans the user's goal text for anything that looks like a file path
+ * (e.g. "ai/Abhinav.ts", "modes/cli.ts", "index.html"). This ensures
+ * that when the user explicitly mentions a file, it's always included
+ * in the semantic results even if TF-IDF doesn't score it highly.
+ */
+function extractFilePaths(goal: string, codebasePath: string): string[] {
+    // Match patterns like: path/to/file.ext, ./file.ts, file.ts
+    const pathRegex = /(?:\.\/)?(?:[\w-]+\/)*[\w-]+\.\w{1,6}/g;
+    const matches = goal.match(pathRegex) || [];
+    
+    const found: string[] = [];
+    for (const match of matches) {
+        const normalized = match.replace(/^\.\//, "");
+        const fullPath = path.join(codebasePath, normalized);
+        if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+            found.push(normalized);
+        }
+    }
+    return found;
+}
+
+/**
+ * Minimum Similarity Score Threshold
+ * 
+ * Files scoring below this threshold are considered irrelevant noise
+ * and are excluded from the agent's context. Without this, the TF-IDF
+ * fallback would inject random documentation files just because they
+ * happen to share common English words like "function" or "add" with
+ * the user's query.
+ */
+const MIN_SIMILARITY_SCORE = 0.15;
 
 export async function semanticSearch(
     goal: string,
@@ -229,18 +278,55 @@ export async function semanticSearch(
     // Sort descending by similarity score
     scoredFiles.sort((a, b) => b.score - a.score);
 
-    // Retrieve top 3
-    const topFiles = scoredFiles.slice(0, 3);
-    console.log(chalk.cyan(`🎯 Intent-driven retrieval found ${topFiles.length} semantically related files:`));
-    for (const f of topFiles) {
-        console.log(chalk.cyan(`   • ${f.relPath} (score: ${f.score.toFixed(3)})`));
+    // Phase 4: Extract explicitly mentioned file paths from the goal
+    const explicitPaths = extractFilePaths(goal, codebasePath);
+
+    // Phase 5: Build final results — explicit paths first, then scored files above threshold
+    const resultPaths = new Set<string>();
+    const results: Array<{ path: string; content: string }> = [];
+
+    // Always include explicitly mentioned files
+    for (const ep of explicitPaths) {
+        if (resultPaths.has(ep)) continue;
+        resultPaths.add(ep);
+        const fullPath = path.join(codebasePath, ep);
+        results.push({
+            path: ep,
+            content: fs.readFileSync(fullPath, "utf8")
+        });
+        console.log(chalk.green(`   📌 Explicitly mentioned: ${ep}`));
     }
 
-    return topFiles.map((f) => {
+    // Add scored files that pass the minimum threshold (up to 3 total)
+    const filteredBeforeThreshold = scoredFiles.slice(0, 3);
+    const filteredAfterThreshold = filteredBeforeThreshold.filter(f => f.score >= MIN_SIMILARITY_SCORE);
+    
+    if (filteredAfterThreshold.length < filteredBeforeThreshold.length) {
+        const droppedCount = filteredBeforeThreshold.length - filteredAfterThreshold.length;
+        console.log(chalk.dim(`   ⏭️  Skipped ${droppedCount} file(s) below similarity threshold (${MIN_SIMILARITY_SCORE})`));
+    }
+
+    for (const f of filteredAfterThreshold) {
+        if (resultPaths.has(f.relPath)) continue;
+        if (results.length >= 3) break;
+        resultPaths.add(f.relPath);
         const fullPath = path.join(codebasePath, f.relPath);
-        return {
+        results.push({
             path: f.relPath,
             content: fs.readFileSync(fullPath, "utf8")
-        };
-    });
+        });
+    }
+
+    console.log(chalk.cyan(`🎯 Intent-driven retrieval found ${results.length} semantically related files:`));
+    for (const f of results) {
+        const scoreEntry = scoredFiles.find(s => s.relPath === f.path);
+        const scoreStr = scoreEntry ? ` (score: ${scoreEntry.score.toFixed(3)})` : " (explicit mention)";
+        console.log(chalk.cyan(`   • ${f.path}${scoreStr}`));
+    }
+
+    if (results.length === 0) {
+        console.log(chalk.dim("   (No files matched above threshold. The agent will use its tools to find relevant files.)"));
+    }
+
+    return results;
 }
