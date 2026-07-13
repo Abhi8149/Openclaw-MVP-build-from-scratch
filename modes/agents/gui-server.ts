@@ -1,6 +1,10 @@
 import http from "node:http";
 import { EventEmitter } from "node:events";
+import { generateCodebaseGraph } from "../../utils/graph-scanner";
 
+/**
+ * Interface representing the synchronized state of the local agent GUI.
+ */
 export interface GuiState {
     goal: string;
     status: "idle" | "running" | "waiting_approval" | "success" | "failed";
@@ -23,6 +27,8 @@ export interface GuiState {
         tokens?: { input: number; output: number };
         cost?: number;
     }>;
+    pinnedFiles: string[];
+    graphMatchedFiles: string[];
 }
 
 export class GuiServer extends EventEmitter {
@@ -41,6 +47,8 @@ export class GuiServer extends EventEmitter {
         logs: [],
         stagedGroups: [],
         messages: [],
+        pinnedFiles: [],
+        graphMatchedFiles: [],
     };
 
     constructor() {
@@ -140,6 +148,58 @@ export class GuiServer extends EventEmitter {
                     return;
                 }
 
+                // API: Toggle file pinning in context
+                if (pathname === "/api/context/pin" && method === "POST") {
+                    let body = "";
+                    req.on("data", (chunk) => {
+                        body += chunk.toString();
+                    });
+                    req.on("end", () => {
+                        try {
+                            const data = JSON.parse(body);
+                            const filePath = data.path ?? "";
+                            const isPin = !!data.pin;
+
+                            if (filePath) {
+                                this.updateState((s) => {
+                                    if (isPin) {
+                                        if (!s.pinnedFiles.includes(filePath)) {
+                                            s.pinnedFiles.push(filePath);
+                                        }
+                                    } else {
+                                        s.pinnedFiles = s.pinnedFiles.filter((p) => p !== filePath);
+                                    }
+                                });
+                            }
+
+                            res.writeHead(200, { "Content-Type": "application/json" });
+                            res.end(JSON.stringify({ success: true, pinnedFiles: this.state.pinnedFiles }));
+                        } catch (err) {
+                            res.writeHead(400, { "Content-Type": "application/json" });
+                            res.end(JSON.stringify({ success: false, error: String(err) }));
+                        }
+                    });
+                    return;
+                }
+
+                // API: Fetch Codebase Dependency Graph
+                if (pathname === "/api/graph" && method === "GET") {
+                    try {
+                        const codebasePath = process.cwd();
+                        const excludePatterns = [
+                            "node_modules", ".git", ".claude", ".openclaw-embeddings.json",
+                            "dist", "build", ".next", "*.log", ".env*"
+                        ];
+                        const graph = generateCodebaseGraph(codebasePath, excludePatterns);
+                        res.writeHead(200, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify(graph));
+                    } catch (err) {
+                        res.writeHead(500, { "Content-Type": "text/plain" });
+                        res.end(`Failed to generate codebase graph: ${String(err)}`);
+                    }
+                    return;
+                }
+
                 // Not found fallback
                 res.writeHead(404, { "Content-Type": "text/plain" });
                 res.end("Not Found");
@@ -192,6 +252,16 @@ export class GuiServer extends EventEmitter {
         });
     }
 
+    public getPinnedFiles(): string[] {
+        return this.state.pinnedFiles;
+    }
+
+    public setGraphMatchedFiles(files: string[]) {
+        this.updateState((s) => {
+            s.graphMatchedFiles = files;
+        });
+    }
+
     public stop() {
         for (const client of this.clients) {
             client.end();
@@ -217,6 +287,7 @@ export class GuiServer extends EventEmitter {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OpenClaw Web GUI Console</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -350,32 +421,49 @@ export class GuiServer extends EventEmitter {
             </div>
         </div>
 
-        <!-- Right Column: Staged Changes / Approvals -->
+        <!-- Right Column: Staged Changes / Codebase Graph -->
         <div class="lg:col-span-6 flex flex-col gap-6 overflow-hidden">
             <div class="glass flex-1 rounded-2xl flex flex-col overflow-hidden h-[600px] min-h-[500px]">
                 <div class="px-5 py-4 border-b border-slate-800/80 flex items-center justify-between">
-                    <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
-                        <i data-lucide="shield-check" class="w-4 h-4"></i> Staged Changes Review
-                    </h3>
+                    <div class="flex items-center gap-4">
+                        <button id="tab-diffs" class="text-xs font-bold uppercase tracking-wider text-purple-400 border-b-2 border-purple-500 pb-1 flex items-center gap-2 focus:outline-none">
+                            <i data-lucide="shield-check" class="w-4 h-4"></i> Staged Diffs
+                        </button>
+                        <button id="tab-graph" class="text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-slate-200 pb-1 flex items-center gap-2 focus:outline-none">
+                            <i data-lucide="network" class="w-4 h-4"></i> Codebase Graph
+                        </button>
+                    </div>
                     <span class="text-xs text-slate-400" id="attempt-badge">Attempt: 0/3</span>
                 </div>
 
-                <!-- Diffs Container -->
-                <div class="flex-1 p-6 overflow-y-auto space-y-6" id="staged-container">
-                    <div class="text-center py-16 text-slate-400 flex flex-col items-center justify-center gap-4">
-                        <i data-lucide="file-code-2" class="w-14 h-14 text-slate-700"></i>
-                        <p class="text-sm">Wait for agent turn execution to inspect proposed modifications.</p>
+                <!-- Diffs Content View -->
+                <div id="diffs-view" class="flex-1 flex flex-col overflow-hidden">
+                    <div class="flex-1 p-6 overflow-y-auto space-y-6" id="staged-container">
+                        <div class="text-center py-16 text-slate-400 flex flex-col items-center justify-center gap-4">
+                            <i data-lucide="file-code-2" class="w-14 h-14 text-slate-700"></i>
+                            <p class="text-sm">Wait for agent turn execution to inspect proposed modifications.</p>
+                        </div>
+                    </div>
+
+                    <!-- Approval Actions Bar -->
+                    <div class="p-5 border-t border-slate-800/80 bg-slate-950/50 flex items-center justify-end gap-3 hidden" id="action-bar">
+                        <button onclick="decide('reject')" class="px-5 py-2.5 rounded-xl border border-red-500/20 bg-red-500/10 hover:bg-red-500/20 text-red-400 font-semibold text-sm transition-all flex items-center gap-2">
+                            <i data-lucide="x" class="w-4 h-4"></i> Reject
+                        </button>
+                        <button onclick="decide('approve')" class="px-6 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold text-sm shadow-lg shadow-purple-500/20 transition-all flex items-center gap-2">
+                            <i data-lucide="check" class="w-4 h-4"></i> Approve & Apply
+                        </button>
                     </div>
                 </div>
 
-                <!-- Approval Actions Bar -->
-                <div class="p-5 border-t border-slate-800/80 bg-slate-950/50 flex items-center justify-end gap-3 hidden" id="action-bar">
-                    <button onclick="decide('reject')" class="px-5 py-2.5 rounded-xl border border-red-500/20 bg-red-500/10 hover:bg-red-500/20 text-red-400 font-semibold text-sm transition-all flex items-center gap-2">
-                        <i data-lucide="x" class="w-4 h-4"></i> Reject
-                    </button>
-                    <button onclick="decide('approve')" class="px-6 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold text-sm shadow-lg shadow-purple-500/20 transition-all flex items-center gap-2">
-                        <i data-lucide="check" class="w-4 h-4"></i> Approve & Apply
-                    </button>
+                <!-- Codebase Graph View -->
+                <div id="graph-view" class="flex-1 hidden flex flex-col overflow-hidden relative">
+                    <div class="absolute top-3 left-3 z-10 flex gap-2 text-[10px] text-slate-300 bg-slate-950/80 px-3 py-2 rounded-xl border border-slate-800">
+                        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span> GraphRAG</span>
+                        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span> Pinned</span>
+                        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-slate-500"></span> Unloaded</span>
+                    </div>
+                    <div id="graph-canvas" class="flex-1 w-full h-full bg-slate-950/40"></div>
                 </div>
             </div>
         </div>
@@ -678,13 +766,152 @@ export class GuiServer extends EventEmitter {
             renderIcons();
         }
 
+        // Tab Navigation
+        const tabDiffs = document.getElementById("tab-diffs");
+        const tabGraph = document.getElementById("tab-graph");
+        const diffsView = document.getElementById("diffs-view");
+        const graphView = document.getElementById("graph-view");
+        const graphCanvas = document.getElementById("graph-canvas");
+
+        tabDiffs.addEventListener("click", () => {
+            tabDiffs.className = "text-xs font-bold uppercase tracking-wider text-purple-400 border-b-2 border-purple-500 pb-1 flex items-center gap-2 focus:outline-none";
+            tabGraph.className = "text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-slate-200 pb-1 flex items-center gap-2 focus:outline-none";
+            diffsView.classList.remove("hidden");
+            graphView.classList.add("hidden");
+        });
+
+        tabGraph.addEventListener("click", () => {
+            tabGraph.className = "text-xs font-bold uppercase tracking-wider text-purple-400 border-b-2 border-purple-500 pb-1 flex items-center gap-2 focus:outline-none";
+            tabDiffs.className = "text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-slate-200 pb-1 flex items-center gap-2 focus:outline-none";
+            diffsView.classList.add("hidden");
+            graphView.classList.remove("hidden");
+            
+            initOrRedrawGraph();
+        });
+
+        // Vis.js Network Graph Integration
+        let visNetwork = null;
+        let visNodes = null;
+        let visEdges = null;
+
+        function initOrRedrawGraph() {
+            if (visNetwork) {
+                visNetwork.redraw();
+                return;
+            }
+
+            fetch("/api/graph")
+                .then(r => r.json())
+                .then(graphData => {
+                    const rawNodes = graphData.nodes.map(n => {
+                        return {
+                            id: n.id,
+                            label: n.label,
+                            title: n.id + " (" + (n.size / 1024).toFixed(1) + " KB)",
+                            color: {
+                                background: "#334155",
+                                border: "#475569",
+                                highlight: { background: "#4f46e5", border: "#818cf8" }
+                            },
+                            borderWidth: 1.5,
+                            size: 15 + Math.min(25, n.size / 1500)
+                        };
+                    });
+
+                    visNodes = new vis.DataSet(rawNodes);
+                    visEdges = new vis.DataSet(graphData.edges.map(e => ({
+                        from: e.from,
+                        to: e.to,
+                        arrows: "to"
+                    })));
+
+                    const data = { nodes: visNodes, edges: visEdges };
+                    const options = {
+                        nodes: {
+                            shape: "dot",
+                            font: { color: "#cbd5e1", size: 10, face: "Plus Jakarta Sans" }
+                        },
+                        edges: {
+                            color: { color: "#1e293b", highlight: "#4f46e5" },
+                            smooth: { type: "continuous" }
+                        },
+                        physics: {
+                            forceAtlas2Based: {
+                                gravitationalConstant: -26,
+                                centralGravity: 0.005,
+                                springLength: 120,
+                                springConstant: 0.18
+                            },
+                            maxVelocity: 146,
+                            solver: "forceAtlas2Based",
+                            timestep: 0.35,
+                            stabilization: { iterations: 150 }
+                        }
+                    };
+
+                    visNetwork = new vis.Network(graphCanvas, data, options);
+
+                    if (window.lastState) {
+                        applyNodeStyles(window.lastState);
+                    }
+
+                    // Toggle context pin on double-click
+                    visNetwork.on("doubleClick", function (params) {
+                        if (params.nodes.length > 0) {
+                            const nodeId = params.nodes[0];
+                            const isCurrentlyPinned = window.lastState ? window.lastState.pinnedFiles.includes(nodeId) : false;
+                            
+                            fetch("/api/context/pin", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ path: nodeId, pin: !isCurrentlyPinned })
+                            })
+                            .catch(err => console.error("Pin request failed:", err));
+                        }
+                    });
+                })
+                .catch(err => console.error("Failed to load codebase graph:", err));
+        }
+
+        function applyNodeStyles(state) {
+            window.lastState = state;
+            if (!visNodes) return;
+            
+            const updates = visNodes.get().map(node => {
+                const isPinned = state.pinnedFiles.includes(node.id);
+                const isMatched = state.graphMatchedFiles.includes(node.id);
+                
+                let color = "#1e293b"; // Unloaded default
+                let borderColor = "#334155";
+                if (isPinned) {
+                    color = "#6366f1"; // Pinned
+                    borderColor = "#818cf8";
+                } else if (isMatched) {
+                    color = "#10b981"; // GraphRAG Matched
+                    borderColor = "#34d399";
+                }
+
+                return {
+                    id: node.id,
+                    color: {
+                        background: color,
+                        border: borderColor,
+                        highlight: { background: "#4f46e5", border: "#818cf8" }
+                    }
+                };
+            });
+            visNodes.update(updates);
+        }
+
         // SSE Connection
         const source = new EventSource("/events");
         
         source.onmessage = (event) => {
             const data = JSON.parse(event.data);
             if (data.type === "init" || data.type === "update") {
+                window.lastState = data.state;
                 updateStateUI(data.state);
+                applyNodeStyles(data.state);
             }
         };
 

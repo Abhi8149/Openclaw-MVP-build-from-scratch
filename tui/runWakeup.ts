@@ -30,6 +30,14 @@ function openUrl(url: string) {
   exec(`${start} ${url}`);
 }
 
+/**
+ * Web UI Mode — Simplified Entry Point
+ * 
+ * Previously this had its own while(true) loop calling runAgentMode per goal.
+ * Now runAgentMode has its own internal chat loop that calls
+ * guiServer.waitForGoal() on each iteration, so we just need to create
+ * the GUI server and call runAgentMode once.
+ */
 async function runWebUiMode(options?: { budget?: number }) {
   const guiServer = new GuiServer();
   const url = await guiServer.start(8000);
@@ -38,24 +46,14 @@ async function runWebUiMode(options?: { budget?: number }) {
   // Auto-open browser
   openUrl(url);
 
-  while (true) {
-    // Wait for the next prompt from the browser
-    const goal = await guiServer.waitForGoal();
-
-    try {
-      // Execute agent run with the goal in browser mode using the active server
-      await runAgentMode({ gui: true, budget: options?.budget, goal, guiServer });
-    } catch (err) {
-      console.error("Web UI execution error:", err);
-      guiServer.updateState((s) => {
-        s.status = "failed";
-        s.logs.push(`❌ Execution error: ${err}`);
-      });
-    }
-
-    // Return to idle state for next prompt
+  try {
+    // runAgentMode's internal loop handles waiting for goals from the browser
+    await runAgentMode({ gui: true, budget: options?.budget, guiServer });
+  } catch (err) {
+    console.error("Web UI execution error:", err);
     guiServer.updateState((s) => {
-      s.status = "idle";
+      s.status = "failed";
+      s.logs.push(`❌ Execution error: ${err}`);
     });
   }
 }

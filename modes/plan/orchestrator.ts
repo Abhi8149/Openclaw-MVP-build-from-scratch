@@ -18,68 +18,132 @@ function stepPrompt(goal: string, step: Planstep): string {
     return [`Goal: ${goal}`, `Step: ${step.title}`, step.description].join('\n');
 }
 
+/**
+ * Plan Mode — Continuous Planning Loop with Accumulated Staging
+ * 
+ * Previously this function handled a single plan-and-execute cycle and returned.
+ * Now it enters a while(true) loop where the user can define multiple goals,
+ * each generating and executing plans. Staged changes accumulate across all
+ * plan executions until the user types /apply.
+ * 
+ * Commands:
+ * - /apply  → triggers bulk approval for ALL accumulated staged changes
+ * - /exit   → leaves Plan mode (warns about pending changes)
+ */
 export async function runPlanMode(): Promise<void> {
-    console.log(chalk.bold("\n🧭 Plan Mode\n"));
+    console.log(chalk.bold("\n🧭 Plan Mode — Continuous Planning\n"));
+    console.log(chalk.dim("  Commands: /apply (commit staged changes) | /exit (leave)\n"));
 
-    const goal = await text({ message: "What is your goal?" });
-    if (isCancel(goal) || !goal.trim()) return;
-
-    const plan = await generatePlan(goal);
-
-    printPlan(plan);
-
-    const selected = await selectSteps(plan);
-
-    if (selected.length === 0) return;
-
-    const proceed = await confirm({
-        message: `Execute ${selected.length} step(s)`,
-        initialValue: true,
-    })
-
+    /**
+     * Shared Tracker & Executor — Persist Across All Plan Executions
+     * 
+     * Changes from Plan 1 + Plan 2 accumulate in the same tracker.
+     * The user applies them all at once with /apply.
+     */
     const config = defaultAgentConfig();
     const tracker = new ActionTracker();
     const executor = new ToolExecutor(tracker, config);
 
+    let isFirstPrompt = true;
 
-    const tools = {
-        ...createAgentTool(executor),
-        ...createWebTools(tracker)
-    };
-
-    for (const step of selected) {
-        console.log(chalk.bold(`\n🔧 ${step.title}\n`));
-
-        const agent = new ToolLoopAgent({
-            model: getAgentModel(),
-            stopWhen: stepCountIs(30),
-            tools
+    while (true) {
+        // Get the user's goal
+        const goalInput = await text({
+            message: isFirstPrompt ? "What is your goal?" : "💬 Next goal?",
+            placeholder: isFirstPrompt ? undefined : " Next planning goal, /apply, or /exit...",
         });
 
-        const r = await agent.generate({ prompt: stepPrompt(plan.goal, step) })
+        if (isCancel(goalInput) || !goalInput) break;
 
-        if (r.text) console.log(renderTerminalMarkdown(r.text));
-    }
+        const goal = goalInput.trim();
+        if (!goal) continue;
 
-    const ok = await runApprovalFlow(tracker);
+        // Slash command: /apply — bulk approval for all accumulated changes
+        if (goal.toLowerCase() === "/apply") {
+            const pendingCount = tracker.getPendingMutations().length;
+            if (pendingCount === 0) {
+                console.log(chalk.dim("\nNo staged changes to apply.\n"));
+                continue;
+            }
+            console.log(chalk.cyan(`\n📦 Applying ${pendingCount} accumulated staged change(s)...\n`));
+            
+            const ok = await runApprovalFlow(tracker);
+            if (!ok) {
+                executor.clearStaging();
+                continue;
+            }
+            const { errors } = executor.applyApprovedFromTracker();
+            if (errors.length) {
+                console.log(chalk.red('\nSome operations reported errors:\n'));
+                for (const e of errors) console.log(chalk.red(`  • ${e}`));
+            } else {
+                console.log(chalk.green('\n✓ All staged changes applied successfully.\n'));
+                if (GitHelper.isGitRepo()) {
+                    GitHelper.commitApprovedChanges("Applied accumulated plan changes");
+                    console.log(chalk.dim("Staged files auto-committed to git history."));
+                }
+            }
+            executor.clearStaging();
+            continue;
+        }
 
-    if (!ok) return executor.clearStaging();
+        // Slash command: /exit — leave plan mode
+        if (goal.toLowerCase() === "/exit") {
+            const pendingCount = tracker.getPendingMutations().length;
+            if (pendingCount > 0) {
+                console.log(chalk.yellow(`\n⚠️  You have ${pendingCount} unapplied staged change(s).`));
+                console.log(chalk.yellow("    They will be discarded. Type /apply first if you want to keep them.\n"));
+                const confirmExit = await text({
+                    message: 'Type "exit" to confirm, or anything else to go back:',
+                });
+                if (isCancel(confirmExit) || confirmExit.trim().toLowerCase() !== "exit") {
+                    continue;
+                }
+                executor.clearStaging();
+            }
+            break;
+        }
 
+        isFirstPrompt = false;
 
-    const { errors } = executor.applyApprovedFromTracker();
-    if (errors.length) {
-        console.log(chalk.red('\nSome operations reported errors:\n'));
-        for (const e of errors) console.log(chalk.red(`  • ${e}`));
-    } else {
-        console.log(chalk.green('\n✓ Applied.\n'));
+        // Generate and execute the plan
+        const plan = await generatePlan(goal);
+        printPlan(plan);
 
-        // AUTO-COMMIT approved changes if inside Git repository
-        if (GitHelper.isGitRepo()) {
-            GitHelper.commitApprovedChanges(goal.trim());
-            console.log(chalk.dim("Staged files auto-committed to git history."));
+        const selected = await selectSteps(plan);
+        if (selected.length === 0) continue;
+
+        const proceed = await confirm({
+            message: `Execute ${selected.length} step(s)`,
+            initialValue: true,
+        });
+
+        if (isCancel(proceed) || !proceed) continue;
+
+        const tools = {
+            ...createAgentTool(executor),
+            ...createWebTools(tracker)
+        };
+
+        for (const step of selected) {
+            console.log(chalk.bold(`\n🔧 ${step.title}\n`));
+
+            const agent = new ToolLoopAgent({
+                model: getAgentModel(),
+                stopWhen: stepCountIs(30),
+                tools
+            });
+
+            const r = await agent.generate({ prompt: stepPrompt(plan.goal, step) });
+            if (r.text) console.log(renderTerminalMarkdown(r.text));
+        }
+
+        // Show non-blocking summary of accumulated changes
+        const pendingCount = tracker.getPendingMutations().length;
+        if (pendingCount > 0) {
+            console.log(chalk.cyan(`\n📦 ${pendingCount} staged change(s) accumulated. Type ${chalk.bold("/apply")} to commit them.\n`));
         }
     }
-    executor.clearStaging();
 
-
+    console.log(chalk.dim("\n👋 Left Plan Mode.\n"));
 }

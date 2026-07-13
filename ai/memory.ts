@@ -4,7 +4,7 @@ export function wrapModelWithRollingMemory(
     model: any,
     goal: string,
     skeletalMap: string,
-    semanticFilesContent: string
+    semanticFilesContent: string | (() => string)
 ): any {
     let scratchpad = "";
 
@@ -44,7 +44,12 @@ export function wrapModelWithRollingMemory(
                         },
                         {
                             role: "user",
-                            content: `Current Scratchpad:\n${scratchpad || "None"}\n\nNew Turn Events:\n${historyStr}`
+                            content: [
+                                {
+                                    type: "text",
+                                    text: `Current Scratchpad:\n${scratchpad || "None"}\n\nNew Turn Events:\n${historyStr}`
+                                }
+                            ]
                         }
                     ];
 
@@ -65,6 +70,10 @@ export function wrapModelWithRollingMemory(
                 }
             }
 
+            const activeSemanticContent = typeof semanticFilesContent === "function"
+                ? semanticFilesContent()
+                : semanticFilesContent;
+
             // Build our minimized system prompt incorporating GraphRAG, Map, and Scratchpad
             const systemPrompt = [
                 "You are an AI coding agent executing a task.",
@@ -72,7 +81,7 @@ export function wrapModelWithRollingMemory(
                 skeletalMap,
                 "",
                 "Here are the full contents of the semantically related files:",
-                semanticFilesContent,
+                activeSemanticContent,
                 "",
                 "Current Scratchpad (summary of past execution state):",
                 scratchpad || "None so far.",
@@ -85,7 +94,10 @@ export function wrapModelWithRollingMemory(
             const newOptions = {
                 ...options,
                 prompt: [
-                    { role: "system", content: systemPrompt },
+                    {
+                        role: "system",
+                        content: systemPrompt
+                    },
                     ...activeMessages
                 ]
             };

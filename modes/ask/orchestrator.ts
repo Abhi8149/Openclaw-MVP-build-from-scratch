@@ -76,22 +76,24 @@ export function createAskTools(executor: ToolExecutor) {
 function askMd(question: string, answer: string): string {
   return `# Ask Mode\n\n## Question\n\n${question.trim()}\n\n## Answer\n\n${answer.trim()}\n`;
 }
+/**
+ * Ask Mode — Continuous Q&A Chat Loop
+ * 
+ * Previously this function handled a single question and returned, forcing
+ * the user back to mode selection. Now it enters a while(true) loop where
+ * the user can ask multiple questions in sequence.
+ * 
+ * Features:
+ * - /exit leaves Ask mode
+ * - Each answer can optionally be saved to a .md file
+ * - Config, tracker, and tools are created once and shared across all questions
+ */
 export async function runAskMode(){
-  console.log(chalk.bold('\n❓ Ask Mode'));
+  console.log(chalk.bold('\n❓ Ask Mode — Continuous Q&A'));
+  console.log(chalk.dim('  Type /exit to leave Ask mode.\n'));
 
-    // 1. Get the user's question
-    const question = await text({
-        message: 'What do you want to ask?'
-    });
-
-    if (isCancel(question) || !question) {
-        return;
-    }
-
-    // 2. Configure the AI to be strictly READ-ONLY
+    // Configure the AI to be strictly READ-ONLY (created once, shared across all questions)
     const config = defaultAgentConfig();
-    
-    // We disable everything EXCEPT file creation (so it can save its answers as .md files later)
     config.tools.allowShellExecution = false;
     config.tools.allowFileModification = false;
     config.tools.allowFolderCreation = false;
@@ -105,42 +107,68 @@ export async function runAskMode(){
         ...createWebTools(tracker)
     };
 
-    const agent= new ToolLoopAgent({
-        model:getAgentModel(),
-        stopWhen:stepCountIs(20),
-        tools,
-    });
+    let isFirstPrompt = true;
 
-    const result=await agent.generate({prompt: question.trim()});
-    const answer=result.text?.trim() || "(no answer)";
-    console.log("\n" + renderTerminalMarkdown(answer) + "\n");
+    while (true) {
+        // Get the user's question
+        const question = await text({
+            message: isFirstPrompt ? 'What do you want to ask?' : '💬 Next question?',
+            placeholder: isFirstPrompt ? undefined : ' Ask another question or type /exit...',
+        });
 
-    const wantSave=await confirm({
-        message:"Save this answer to a .md file in the current directory?",
-        initialValue:false,
-    });
+        if (isCancel(question) || !question) break;
 
-    if(isCancel(wantSave) || !wantSave) return;
+        const trimmedQuestion = question.trim();
+        if (!trimmedQuestion) continue;
 
-    const filename=await text({
-        message:"Filename",
-        initialValue:"ask.md",
-        validate:(v)=>{
-            const s=(v?? '').trim();
-            if(!s) return "Required";
-            if(s.includes('..') || s.includes('/') || s.includes('\\')) return 'No paths';
-            if(!s.toLocaleLowerCase().endsWith('.md')) return "Must end with .md";
+        // Slash command: /exit
+        if (trimmedQuestion.toLowerCase() === '/exit') break;
+
+        isFirstPrompt = false;
+
+        // Run the agent to answer the question
+        const agent = new ToolLoopAgent({
+            model: getAgentModel(),
+            stopWhen: stepCountIs(20),
+            tools,
+        });
+
+        const result = await agent.generate({ prompt: trimmedQuestion });
+        const answer = result.text?.trim() || "(no answer)";
+        console.log("\n" + renderTerminalMarkdown(answer) + "\n");
+
+        // Optionally save the answer to a .md file
+        const wantSave = await confirm({
+            message: "Save this answer to a .md file in the current directory?",
+            initialValue: false,
+        });
+
+        if (isCancel(wantSave) || !wantSave) continue;
+
+        const filename = await text({
+            message: "Filename",
+            initialValue: "ask.md",
+            validate: (v) => {
+                const s = (v ?? '').trim();
+                if (!s) return "Required";
+                if (s.includes('..') || s.includes('/') || s.includes('\\')) return 'No paths';
+                if (!s.toLocaleLowerCase().endsWith('.md')) return "Must end with .md";
+            }
+        });
+
+        if (isCancel(filename)) continue;
+
+        const trimmedFilename = filename.trim();
+        executor.createFile(trimmedFilename, askMd(trimmedQuestion, answer));
+        const ok = await runApprovalFlow(tracker);
+        if (!ok) {
+            executor.clearStaging();
+            continue;
         }
-    })
 
-    if(isCancel(filename)) return;
+        executor.applyApprovedFromTracker();
+        executor.clearStaging();
+    }
 
-    const trimmedFilename = filename.trim();
-    executor.createFile(trimmedFilename, askMd(question,answer));
-    const ok=await runApprovalFlow(tracker)
-    if(!ok) return executor.clearStaging();
-
-    executor.applyApprovedFromTracker();
-    executor.clearStaging();
-
+    console.log(chalk.dim('\n👋 Left Ask Mode.\n'));
 }
