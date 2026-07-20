@@ -128,7 +128,7 @@ export async function runAskMode(){
 
         // Run the agent to answer the question
         const agent = new ToolLoopAgent({
-            model: getAgentModel(),
+            model: await getAgentModel(trimmedQuestion),
             stopWhen: stepCountIs(20),
             tools,
         });
@@ -166,7 +166,7 @@ export async function runAskMode(){
             continue;
         }
 
-        executor.applyApprovedFromTracker();
+        await executor.applyApprovedFromTracker();
         executor.clearStaging();
     }
 

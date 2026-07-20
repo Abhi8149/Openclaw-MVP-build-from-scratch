@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { homedir } from "node:os";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import chalk from "chalk";
 import type { AgentConfig, ActionLog } from "./types";
 import { ActionTracker } from "./action-tracker";
 import { classifyFileMutation, classifyShellCommand } from "./risk-classifier";
@@ -441,7 +442,7 @@ export class ToolExecutor {
     return text;
   }
 
-  applyApprovedFromTracker(): { errors: string[] } {
+  async applyApprovedFromTracker(): Promise<{ errors: string[] }> {
     const errors: string[] = [];
     const all = [...this.tracker.getActions()];
     console.log(`🔍 [Debug] applyApprovedFromTracker: total actions in tracker: ${all.length}`);
@@ -498,14 +499,39 @@ export class ToolExecutor {
     )) {
       const cmd = a.details.command;
       if (!cmd) continue;
-      const r = spawnSync(cmd, {
-        shell: true,
-        cwd: this.config.codebasePath,
-        encoding: "utf8",
-        maxBuffer: 16 * 1024 * 1024,
+
+      console.log(chalk.bold(`\n🚀 [Shell] Executing command: ${cmd}\n`));
+
+      await new Promise<void>((resolve) => {
+        const wasRaw = process.stdin.isRaw;
+        if (process.stdin.isTTY) {
+          process.stdin.setRawMode(true);
+        }
+
+        const child = spawn(cmd, {
+          shell: true,
+          cwd: this.config.codebasePath,
+          stdio: "inherit",
+        });
+
+        child.on("exit", (code) => {
+          if (process.stdin.isTTY) {
+            process.stdin.setRawMode(wasRaw);
+          }
+          if (code && code !== 0) {
+            errors.push(`shell exit ${code}: ${cmd}`);
+          }
+          resolve();
+        });
+
+        child.on("error", (err) => {
+          if (process.stdin.isTTY) {
+            process.stdin.setRawMode(wasRaw);
+          }
+          errors.push(`shell error: ${err.message}`);
+          resolve();
+        });
       });
-      if (r.status && r.status !== 0)
-        errors.push(`shell exit ${r.status}: ${cmd}`);
     }
 
     return { errors };
@@ -593,6 +619,10 @@ export class ToolExecutor {
     return `Staged targeted edits for: ${key}`;
   }
 
+  hasStagedMutations(): boolean {
+    return this.overlay.size > 0 || this.deleted.size > 0;
+  }
+
   tempWriteStaged(): () => void {
     const backups = new Map<string, string | null>(); // null means file did not exist
 
@@ -632,6 +662,146 @@ export class ToolExecutor {
             }
         }
     };
+  }
+
+  async searchWeb(query: string): Promise<string> {
+    const braveKey = process.env.BRAVE_SEARCH_API_KEY;
+    const firecrawlKey = process.env.FIRECRAWL_API_KEY;
+
+    if (braveKey) {
+      try {
+        const response = await fetch(
+          `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}`,
+          {
+            headers: {
+              "Accept": "application/json",
+              "Accept-Encoding": "gzip",
+              "X-Subscription-Token": braveKey,
+            },
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error(`Brave Search API error: ${response.status} ${response.statusText}`);
+        }
+
+        const data: any = await response.json();
+        const results = data.web?.results ?? [];
+        if (results.length === 0) {
+          return "No search results found.";
+        }
+
+        const formatted = results
+          .slice(0, 5)
+          .map((r: any, idx: number) => {
+            return `[Result ${idx + 1}]
+Title: ${r.title}
+URL: ${r.url}
+Snippet: ${r.description ?? "No description available."}`;
+          })
+          .join("\n\n");
+
+        this.tracker.log({
+          type: "code_analysis",
+          path: "web_search",
+          details: { after: formatted, toolName: "search_web" },
+          status: "executed",
+        });
+
+        return formatted;
+      } catch (err: any) {
+        return `Error performing web search via Brave: ${err.message}`;
+      }
+    } else if (firecrawlKey) {
+      try {
+        const response = await fetch("https://api.firecrawl.dev/v1/search", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${firecrawlKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            query: query,
+            limit: 5,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Firecrawl Search API error: ${response.status} ${response.statusText}`);
+        }
+
+        const data: any = await response.json();
+        const results = data.data ?? [];
+        if (results.length === 0) {
+          return "No search results found.";
+        }
+
+        const formatted = results
+          .map((r: any, idx: number) => {
+            return `[Result ${idx + 1}]
+Title: ${r.title ?? "No Title"}
+URL: ${r.url}
+Snippet: ${r.description ?? r.snippet ?? "No description available."}`;
+          })
+          .join("\n\n");
+
+        this.tracker.log({
+          type: "code_analysis",
+          path: "web_search",
+          details: { after: formatted, toolName: "search_web" },
+          status: "executed",
+        });
+
+        return formatted;
+      } catch (err: any) {
+        return `Error performing web search via Firecrawl: ${err.message}`;
+      }
+    }
+
+    return "Error: Neither BRAVE_SEARCH_API_KEY nor FIRECRAWL_API_KEY is configured in your .env file. Please add one of them to enable web search.";
+  }
+
+  async scrapePage(url: string): Promise<string> {
+    const key = process.env.FIRECRAWL_API_KEY;
+    if (!key) {
+      return "Error: FIRECRAWL_API_KEY is not configured in your .env file. Please add it to enable web page scraping.";
+    }
+
+    try {
+      const response = await fetch("https://api.firecrawl.dev/v1/scrape", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          url: url,
+          formats: ["markdown"],
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Firecrawl Scrape API error: ${response.status} ${response.statusText}`);
+      }
+
+      const data: any = await response.json();
+      if (!data.success || !data.data) {
+        throw new Error(data.error ?? "Failed to scrape page successfully.");
+      }
+
+      const markdown = data.data.markdown ?? "No content returned.";
+
+      this.tracker.log({
+        type: "code_analysis",
+        path: "web_scrape",
+        details: { after: markdown, toolName: "scrape_page" },
+        status: "executed",
+      });
+
+      return markdown;
+    } catch (err: any) {
+      return `Error scraping page via Firecrawl: ${err.message}`;
+    }
   }
 
   clearStaging():void{

@@ -121,6 +121,22 @@ export function createAgentTool(executor: ToolExecutor) {
             description: "Get a map of all files and top-level exported functions in the project.",
             inputSchema: z.object({}),
             execute: async () => generateRepoMap(executor.config.codebasePath, executor.config.excludePatterns)
+        }),
+
+        search_web: tool({
+            description: "Search the web using Brave Search for documentation, libraries, code examples, or syntax help when local workspace information is insufficient.",
+            inputSchema: z.object({
+                query: z.string().describe("The search query"),
+            }),
+            execute: async ({ query }) => executor.searchWeb(query)
+        }),
+
+        scrape_page: tool({
+            description: "Scrape the complete text content of a specific public URL into clean Markdown using Firecrawl.",
+            inputSchema: z.object({
+                url: z.string().url().describe("The full public URL of the web page to scrape"),
+            }),
+            execute: async ({ url }) => executor.scrapePage(url)
         })
 
     }

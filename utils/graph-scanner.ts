@@ -59,7 +59,7 @@ function scanFiles(dir: string, baseDir: string, exclude: string[]): string[] {
     return results;
 }
 
-function resolveImportPath(importerPath: string, importSpecifier: string, codebasePath: string): string | null {
+export function resolveImportPath(importerPath: string, importSpecifier: string, codebasePath: string): string | null {
     // Only resolve relative imports
     if (!importSpecifier.startsWith(".")) return null;
 

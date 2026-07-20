@@ -15,7 +15,8 @@ import { GitHelper } from "../../utils/git";
 import { runProjectChecks } from "../../utils/checker";
 import { GuiServer } from "./gui-server";
 import { generateRepoMap } from "../../utils/repo-map";
-import { semanticSearch } from "../../utils/semantic-retrieval";
+import { semanticSearch, extractSkeleton, getLatestMatchedSymbols } from "../../utils/semantic-retrieval";
+import { resolveImportPath } from "../../utils/graph-scanner";
 import { runRewindMenu } from "./rewind";
 
 /**
@@ -28,6 +29,82 @@ import { runRewindMenu } from "./rewind";
  * 
  * Returns the total tokens used by this task for session-level cost tracking.
  */
+/**
+ * Recursively scans files in context for relative imports, resolving them and
+ * extracting their AST skeletons up to a maximum recursion depth.
+ */
+export function traverseImports(
+    initialFiles: string[],
+    codebasePath: string,
+    excludePatterns: string[],
+    maxDepth = 2
+): string {
+    const visited = new Set<string>(initialFiles);
+    const skeletons: string[] = [];
+    const queue: Array<{ path: string; depth: number }> = initialFiles.map(p => ({ path: p, depth: 0 }));
+
+    const importRegexes = [
+        /from\s+["']([^"']+)["']/g,
+        /import\s+["']([^"']+)["']/g,
+        /(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g
+    ];
+
+    while (queue.length > 0) {
+        const current = queue.shift()!;
+        if (current.depth >= maxDepth) continue;
+
+        const fullPath = path.join(codebasePath, current.path);
+        let content = "";
+        try {
+            if (fs.existsSync(fullPath)) {
+                content = fs.readFileSync(fullPath, "utf8");
+            }
+        } catch {
+            continue;
+        }
+
+        const imports = new Set<string>();
+        for (const regex of importRegexes) {
+            regex.lastIndex = 0;
+            let match;
+            while ((match = regex.exec(content)) !== null) {
+                const specifier = match[1];
+                if (specifier) {
+                    imports.add(specifier);
+                }
+            }
+        }
+
+        for (const specifier of imports) {
+            const resolved = resolveImportPath(current.path, specifier, codebasePath);
+            if (resolved && !visited.has(resolved)) {
+                const isExcluded = excludePatterns.some((p) => {
+                    if (p.includes("*")) {
+                        const regex = new RegExp("^" + p.replace(/\*/g, ".*") + "$");
+                        return regex.test(path.basename(resolved));
+                    }
+                    return resolved.startsWith(p) || path.basename(resolved) === p;
+                });
+
+                if (!isExcluded) {
+                    visited.add(resolved);
+                    try {
+                        const targetFullPath = path.join(codebasePath, resolved);
+                        if (fs.existsSync(targetFullPath)) {
+                            const targetContent = fs.readFileSync(targetFullPath, "utf8");
+                            const skeleton = extractSkeleton(resolved, targetContent);
+                            skeletons.push(`--- Imported File Skeleton: ${resolved} ---\n${skeleton}`);
+                            queue.push({ path: resolved, depth: current.depth + 1 });
+                        }
+                    } catch {}
+                }
+            }
+        }
+    }
+
+    return skeletons.join("\n\n");
+}
+
 async function executeSingleTask(
     goal: string,
     config: ReturnType<typeof defaultAgentConfig>,
@@ -59,7 +136,7 @@ async function executeSingleTask(
             ...pinned
         ]));
         
-        return allFiles.map(p => {
+        const mainContent = allFiles.map(p => {
             try {
                 const fullPath = path.join(config.codebasePath, p);
                 if (fs.existsSync(fullPath)) {
@@ -68,13 +145,19 @@ async function executeSingleTask(
             } catch {}
             return "";
         }).filter(Boolean).join("\n\n");
+
+        const matchedSymbols = getLatestMatchedSymbols();
+
+        const importedSkeletons = traverseImports(allFiles, config.codebasePath, config.excludePatterns, 2);
+
+        return [mainContent, matchedSymbols, importedSkeletons].filter(Boolean).join("\n\n");
     };
 
     // Skeletal Map: Get line-by-line class and function mappings
     const skeletalMap = generateRepoMap(config.codebasePath, config.excludePatterns);
 
     // Rolling State Memory: Wrap model to summarize history and keep context compact
-    const rawModel = getAgentModel(goal);
+    const rawModel = await getAgentModel(goal);
     const wrappedModel = wrapModelWithRollingMemory(rawModel, goal, skeletalMap, getSemanticFilesContent);
 
     /**
@@ -168,15 +251,20 @@ async function executeSingleTask(
         }
 
         // Run checks on staged files temporarily applied to the disk
-        const cleanup = executor.tempWriteStaged();
-        let check;
-        try {
-            check = runProjectChecks(config.codebasePath);
-        } finally {
-            cleanup();
+        let checkPassed = true;
+        let checkError = "";
+        if (executor.hasStagedMutations()) {
+            const cleanup = executor.tempWriteStaged();
+            try {
+                const check = runProjectChecks(config.codebasePath);
+                checkPassed = check.passed;
+                checkError = check.errorOutput || "Unknown compilation error";
+            } finally {
+                cleanup();
+            }
         }
 
-        if (check.passed) {
+        if (checkPassed) {
             if (result.text?.trim()) {
                 const md = renderTerminalMarkdown(result.text);
                 console.log(md);
@@ -196,7 +284,7 @@ async function executeSingleTask(
         } else {
             const failMsg = `⚠️ Iteration ${attempts} failed checks. Let's fix it...`;
             console.log(chalk.yellow(`\n${failMsg}\n`));
-            feedback = check.errorOutput || "Unknown compilation error";
+            feedback = checkError;
             if (guiServer) {
                 guiServer.updateState((s) => {
                     s.logs.push(failMsg);
@@ -256,7 +344,7 @@ async function applyAccumulatedChanges(
     }
 
     console.log(chalk.dim(`🔍 [Debug] Calling applyApprovedFromTracker...`));
-    const { errors } = executor.applyApprovedFromTracker();
+    const { errors } = await executor.applyApprovedFromTracker();
     console.log(chalk.dim(`🔍 [Debug] applyApprovedFromTracker returned. Errors: ${errors.length}`));
 
     if (errors.length) {

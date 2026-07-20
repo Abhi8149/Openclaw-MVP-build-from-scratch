@@ -50,7 +50,7 @@ bun install
 
 # 2. Set your API keys (see Configuration)
 export OPENROUTER_API_KEY="sk-or-..."
-export OPENROUTER_MODEL="anthropic/claude-3.5-sonnet"   # any OpenRouter model id
+export OPENROUTER_MODEL="poolside/laguna-m.1:free"   # any OpenRouter model id
 
 # 3. Launch the agent
 bun run index.ts wakeup
@@ -417,7 +417,7 @@ the folder isn't a git repo or no checkpoints exist yet.
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `OPENROUTER_API_KEY` | Yes | API key for the OpenRouter model gateway. |
-| `OPENROUTER_MODEL` | No (defaults to `"free"`) | Model id, e.g. `anthropic/claude-3.5-sonnet`. Also the key used to look up `MODEL_PRICING`. |
+| `OPENROUTER_MODEL` | No (defaults to `"free"`) | Model id, e.g. `poolside/laguna-m.1:free`. Also the key used to look up `MODEL_PRICING`. |
 | `FIRECRAWL_API_KEY` | No | Enables `web_search`/`web_crawl` in Plan & Ask modes. Without it, web tools are omitted. |
 | `SKILLS_DIRS` | No | Semicolon-separated extra roots scanned by `list_skills`/`read_skill` (in addition to `~/.cursor/skills-cursor` and `~/.claude/skills`). |
 

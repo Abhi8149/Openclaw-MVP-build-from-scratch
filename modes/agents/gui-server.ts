@@ -188,6 +188,7 @@ export class GuiServer extends EventEmitter {
                         const codebasePath = process.cwd();
                         const excludePatterns = [
                             "node_modules", ".git", ".claude", ".openclaw-embeddings.json",
+                            "agent-index.db*",
                             "dist", "build", ".next", "*.log", ".env*"
                         ];
                         const graph = generateCodebaseGraph(codebasePath, excludePatterns);
@@ -289,6 +290,7 @@ export class GuiServer extends EventEmitter {
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
         body {
@@ -327,6 +329,97 @@ export class GuiServer extends EventEmitter {
         @keyframes pulse-jump {
             0%, 80%, 100% { transform: translateY(0); }
             40% { transform: translateY(-6px); }
+        }
+
+        /* Markdown body styling for chat bubbles to look visually premium */
+        .markdown-body {
+            font-size: 0.875rem;
+            line-height: 1.625;
+        }
+        .markdown-body p {
+            margin-bottom: 0.75rem;
+        }
+        .markdown-body p:last-child {
+            margin-bottom: 0;
+        }
+        .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 {
+            font-weight: 700;
+            color: #f1f5f9;
+            margin-top: 1.25rem;
+            margin-bottom: 0.5rem;
+        }
+        .markdown-body h1 { font-size: 1.25rem; }
+        .markdown-body h2 { font-size: 1.125rem; }
+        .markdown-body h3 { font-size: 1rem; }
+        .markdown-body h4 { font-size: 0.875rem; }
+        .markdown-body ul {
+            list-style-type: disc;
+            padding-left: 1.25rem;
+            margin-bottom: 0.75rem;
+        }
+        .markdown-body ol {
+            list-style-type: decimal;
+            padding-left: 1.25rem;
+            margin-bottom: 0.75rem;
+        }
+        .markdown-body li {
+            margin-bottom: 0.25rem;
+        }
+        .markdown-body code {
+            font-family: 'JetBrains Mono', monospace;
+            background-color: rgba(255, 255, 255, 0.08);
+            color: #e2e8f0;
+            padding: 0.125rem 0.25rem;
+            border-radius: 0.25rem;
+            font-size: 0.8125rem;
+        }
+        .markdown-body pre {
+            background-color: #05050a;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            padding: 0.875rem;
+            border-radius: 0.75rem;
+            overflow-x: auto;
+            margin-top: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+        .markdown-body pre code {
+            background-color: transparent;
+            padding: 0;
+            border-radius: 0;
+            color: #cbd5e1;
+        }
+        .markdown-body a {
+            color: #a855f7;
+            text-decoration: underline;
+        }
+        .markdown-body a:hover {
+            color: #c084fc;
+        }
+        .markdown-body blockquote {
+            border-left: 4px solid #a855f7;
+            padding-left: 1rem;
+            color: #94a3b8;
+            font-style: italic;
+            margin-bottom: 0.75rem;
+        }
+        .markdown-body hr {
+            border-color: rgba(255, 255, 255, 0.08);
+            margin: 1rem 0;
+        }
+        .markdown-body table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 0.75rem;
+            font-size: 0.8125rem;
+        }
+        .markdown-body th, .markdown-body td {
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            padding: 0.5rem;
+            text-align: left;
+        }
+        .markdown-body th {
+            background-color: rgba(255, 255, 255, 0.04);
+            color: #f1f5f9;
         }
     </style>
 </head>
@@ -610,13 +703,17 @@ export class GuiServer extends EventEmitter {
                 \`;
             }
 
+            const renderedText = (typeof marked !== "undefined" && marked.parse) 
+                ? marked.parse(msg.text) 
+                : \`<div class="whitespace-pre-wrap">\${escapeHtml(msg.text)}</div>\`;
+
             return \`
                 <div class="flex gap-3 \${alignClass}">
                     <div class="w-8 h-8 rounded-full \${avatarColor} border flex items-center justify-center flex-shrink-0">
                         <i data-lucide="\${icon}" class="w-4 h-4"></i>
                     </div>
-                    <div class="flex-1 \${bubbleClass} border rounded-2xl px-4 py-3 max-w-[85%] text-sm leading-relaxed">
-                        <div class="whitespace-pre-wrap">\${msg.text}</div>
+                    <div class="flex-1 \${bubbleClass} border rounded-2xl px-4 py-3 max-w-[85%] text-sm leading-relaxed overflow-hidden">
+                        <div class="markdown-body text-slate-200">\${renderedText}</div>
                         \${tokenHtml}
                         <span class="text-[9px] text-slate-500 block text-right mt-1.5">\${msg.timestamp}</span>
                     </div>

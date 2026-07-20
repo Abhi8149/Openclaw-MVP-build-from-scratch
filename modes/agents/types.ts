@@ -57,6 +57,7 @@ export const defaultAgentConfig = (): AgentConfig => ({
     '.git',
     '.claude',
     '.openclaw-embeddings.json',
+    'agent-index.db*',
     'dist',
     'build',
     '.next',

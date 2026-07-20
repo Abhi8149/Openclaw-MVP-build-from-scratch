@@ -1,6 +1,7 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import chalk from "chalk";
 
+
 export function calculateTradeoff(goal: string): number {
     const lowercase = goal.toLowerCase();
     
@@ -43,12 +44,12 @@ export function calculateTradeoff(goal: string): number {
     return Math.max(0.0, Math.min(10.0, tradeoff));
 }
 
-export function getAgentModel(goal?: string){
+export async function getAgentModel(goal?: string){
     const provider = createOpenRouter({ apiKey: process.env.OPENROUTER_API_KEY });
 
-    let modelId = process.env.OPENROUTER_MODEL || "openrouter/auto";
+    let modelId = "openrouter/auto";
 
-    // Dynamic routing via OpenRouter Auto-Router (NotDiamond) if a goal is provided
+    // Dynamic routing via OpenRouter built-in auto-router if a goal is provided and model is auto
     if (modelId === "openrouter/auto" && goal) {
         const tradeoff = calculateTradeoff(goal);
         console.log(chalk.cyan(`🔄 OpenRouter Auto-Router active. Dynamic Tradeoff: ${tradeoff.toFixed(1)}/10.0 (0=pure capability, 10=max savings)...`));
@@ -58,10 +59,8 @@ export function getAgentModel(goal?: string){
                 id: "auto-router",
                 cost_quality_tradeoff: tradeoff,
                 allowed_models: [
-                    "anthropic/claude-3.5-sonnet",
-                    "openai/gpt-4o",
-                    "google/gemini-2.5-flash-lite",
-                    "meta-llama/llama-3.1-70b-instruct"
+                    "nvidia/nemotron-3-ultra-550b-a55b:free",
+                    "deepseek/deepseek-v4-flash"
                 ]
             }]
         };
@@ -73,8 +72,7 @@ export function getAgentModel(goal?: string){
 }
 
 export const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-    "tencent/hy3:free": { input: 0.0, output: 0.0 },
-    "meta-llama/llama-3.1-70b-instruct": { input: 0.52, output: 0.75 },
-    "anthropic/claude-3.5-sonnet": { input: 3.0, output: 15.0 },
-    "openrouter/auto": { input: 1.5, output: 7.5 }, // Estimated average for auto-routing cost calculation
+    "nvidia/nemotron-3-ultra-550b-a55b:free": { input: 0.0, output: 0.0 },
+    "deepseek/deepseek-v4-flash": { input: 0.14, output: 0.28 },
+    "openrouter/auto": { input: 0.07, output: 0.14 }, // Estimated average for auto-routing cost calculation
 };

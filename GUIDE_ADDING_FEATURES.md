@@ -338,9 +338,11 @@ Define pricing structures in [ai/ai.config.ts](file:///c:/Users/abhinav/OneDrive
 ```typescript
 // Price per 1 Million tokens
 export const MODEL_PRICING: Record<string, { input: number; output: number }> = {
+    "meta-llama/llama-3.2-3b-instruct:free": { input: 0.0, output: 0.0 },
+    "nvidia/nemotron-3-ultra-550b-a55b:free": { input: 0.0, output: 0.0 },
     "tencent/hy3:free": { input: 0.0, output: 0.0 },
-    "meta-llama/llama-3.1-70b-instruct": { input: 0.52, output: 0.75 },
-    "anthropic/claude-3.5-sonnet": { input: 3.0, output: 15.0 },
+    "poolside/laguna-m.1:free": { input: 0.0, output: 0.0 },
+    "cohere/north-mini-code:free": { input: 0.0, output: 0.0 },
 };
 ```
 

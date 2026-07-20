@@ -17,11 +17,11 @@ export function wrapModelWithRollingMemory(
         doGenerate: async function (options: any) {
             const messages = options.prompt || [];
 
-            // If we have history, summarize the intermediate messages
-            if (messages.length > 2) {
-                // We summarize messages from the start up to the second-to-last turn,
-                // keeping the last 2 turns active for tool loop execution.
-                const historyToSummarize = messages.slice(0, -2);
+            // If we have history, summarize the intermediate messages only when they exceed 8 messages.
+            // This keeps the prompt cache valid for longer and avoids redundant summarize API calls.
+            if (messages.length > 8) {
+                // We keep the last 4 turns active to maintain full local context for the tool execution loop.
+                const historyToSummarize = messages.slice(0, -4);
                 
                 try {
                     const historyStr = historyToSummarize
@@ -87,8 +87,8 @@ export function wrapModelWithRollingMemory(
                 scratchpad || "None so far.",
             ].join("\n");
 
-            // We preserve the last 2 messages (to ensure the ToolLoopAgent's direct state machine knows what the last tool call/result was)
-            const activeMessages = messages.slice(-2);
+            // We preserve the last 4 messages to keep the most recent tool interactions fully active
+            const activeMessages = messages.length > 4 ? messages.slice(-4) : messages;
 
             // Construct new options with the minimized system prompt and active messages
             const newOptions = {

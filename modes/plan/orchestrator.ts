@@ -72,7 +72,7 @@ export async function runPlanMode(): Promise<void> {
                 executor.clearStaging();
                 continue;
             }
-            const { errors } = executor.applyApprovedFromTracker();
+            const { errors } = await executor.applyApprovedFromTracker();
             if (errors.length) {
                 console.log(chalk.red('\nSome operations reported errors:\n'));
                 for (const e of errors) console.log(chalk.red(`  • ${e}`));
@@ -129,7 +129,7 @@ export async function runPlanMode(): Promise<void> {
             console.log(chalk.bold(`\n🔧 ${step.title}\n`));
 
             const agent = new ToolLoopAgent({
-                model: getAgentModel(),
+                model: await getAgentModel(plan.goal),
                 stopWhen: stepCountIs(30),
                 tools
             });
