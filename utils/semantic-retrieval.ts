@@ -111,7 +111,7 @@ function extractSkeletonRegex(filePath: string, fileContent: string): string {
                 if (match) skeleton += `- function.name: ${match[1]}\n`;
             } else if (trimmed.match(/\b(?:async\s+)?(\w+)\s*\([^)]*\)\s*(?::\s*[^{]+)?\s*{/)) {
                 const match = trimmed.match(/\b(?:async\s+)?(\w+)\s*\(/);
-                if (match && !["if", "for", "while", "switch", "catch"].includes(match[1])) {
+                if (match && match[1] && !["if", "for", "while", "switch", "catch"].includes(match[1])) {
                     skeleton += `- method.name: ${match[1]}\n`;
                 }
             }
@@ -152,7 +152,7 @@ function extractSkeletonRegex(filePath: string, fileContent: string): string {
                 if (match) skeleton += `- class.name: ${match[1]}\n`;
             } else if (trimmed.match(/\b(?:public|private|protected|internal|static|\s)+\w+\s+(\w+)\s*\([^)]*\)/)) {
                 const match = trimmed.match(/\b(?:public|private|protected|internal|static|\s)+\w+\s+(\w+)\s*\(/);
-                if (match && !["if", "for", "while", "switch", "catch"].includes(match[1])) {
+                if (match && match[1] && !["if", "for", "while", "switch", "catch"].includes(match[1])) {
                     skeleton += `- method.name: ${match[1]}\n`;
                 }
             }
@@ -164,7 +164,7 @@ function extractSkeletonRegex(filePath: string, fileContent: string): string {
                 if (match) skeleton += `- class.name: ${match[1]}\n`;
             } else if (trimmed.match(/\b(\w+)\s*\([^)]*\)\s*(?:const)?\s*[{;]/)) {
                 const match = trimmed.match(/\b(\w+)\s*\(/);
-                if (match && !["if", "for", "while", "switch", "catch"].includes(match[1])) {
+                if (match && match[1] && !["if", "for", "while", "switch", "catch"].includes(match[1])) {
                     skeleton += `- function.name: ${match[1]}\n`;
                 }
             }

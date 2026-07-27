@@ -804,6 +804,34 @@ Snippet: ${r.description ?? r.snippet ?? "No description available."}`;
     }
   }
 
+  rollbackActions(actionIds: string[]): void {
+    const all = this.tracker.getActions();
+    for (const id of actionIds) {
+      const a = all.find(x => x.id === id);
+      if (!a) continue;
+
+      // Mark as rejected in tracker
+      this.tracker.updateStatus(id, "rejected", false);
+
+      // Revert overlays
+      const key = this.norm(a.path);
+      if (a.type === "file_create") {
+        this.overlay.delete(key);
+      } else if (a.type === "file_modify") {
+        if (a.details.before !== undefined) {
+          this.overlay.set(key, a.details.before);
+        } else {
+          this.overlay.delete(key);
+        }
+      } else if (a.type === "file_delete") {
+        this.deleted.delete(key);
+        if (a.details.before !== undefined) {
+          this.overlay.set(key, a.details.before);
+        }
+      }
+    }
+  }
+
   clearStaging():void{
     this.overlay.clear()
     this.deleted.clear()

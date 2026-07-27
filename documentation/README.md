@@ -15,3 +15,4 @@ Each doc answers four questions in plain, non-jargon language:
 - [fuzzy-edit-matching.md](./fuzzy-edit-matching.md) — resilient search/replace matching for the `edit_file` tool
 - [risk-tiered-approval.md](./risk-tiered-approval.md) — classifies staged actions by risk and adjusts the approval flow per tier
 - [session-rewind.md](./session-rewind.md) — browse and hard-reset to any past auto-commit checkpoint from a CLI menu
+- [competitive-analysis.md](./competitive-analysis.md) — audit against Claude Code / OpenCode / OpenClaw, plus a prioritized improvement roadmap

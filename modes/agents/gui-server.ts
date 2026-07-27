@@ -273,6 +273,20 @@ export class GuiServer extends EventEmitter {
         }
     }
 
+    public broadcastStreamChunk(chunk: string, isStart: boolean) {
+        this.broadcast({
+            type: "stream_chunk",
+            chunk,
+            isStart,
+        });
+    }
+
+    public finalizeStreamMessage() {
+        this.broadcast({
+            type: "stream_end"
+        });
+    }
+
     private broadcast(msg: any) {
         const payload = JSON.stringify(msg);
         for (const client of this.clients) {
@@ -1003,12 +1017,54 @@ export class GuiServer extends EventEmitter {
         // SSE Connection
         const source = new EventSource("/events");
         
+        let streamingText = "";
+
         source.onmessage = (event) => {
             const data = JSON.parse(event.data);
             if (data.type === "init" || data.type === "update") {
                 window.lastState = data.state;
                 updateStateUI(data.state);
                 applyNodeStyles(data.state);
+            } else if (data.type === "stream_chunk") {
+                if (data.isStart) {
+                    streamingText = "";
+                    // Clear existing streaming placeholder if any
+                    const existing = document.getElementById("streaming-agent-message");
+                    if (existing) existing.remove();
+
+                    // Create placeholder message markup
+                    const placeholderHtml = \`
+                        <div id="streaming-agent-message" class="flex gap-3">
+                            <div class="w-8 h-8 rounded-full bg-purple-600/20 text-purple-400 border border-purple-500/30 flex items-center justify-center flex-shrink-0">
+                                <i data-lucide="bot" class="w-4 h-4"></i>
+                            </div>
+                            <div class="flex-1 bg-slate-900/60 border border-slate-800/80 text-slate-200 border rounded-2xl px-4 py-3 max-w-[85%] text-sm leading-relaxed overflow-hidden">
+                                <div class="markdown-body text-slate-200"></div>
+                                <span class="text-[9px] text-slate-500 block text-right mt-1.5">Streaming...</span>
+                            </div>
+                        </div>
+                    \`;
+                    const tempDiv = document.createElement("div");
+                    tempDiv.innerHTML = placeholderHtml.trim();
+                    chatMessages.appendChild(tempDiv.firstElementChild || tempDiv.firstChild);
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                    renderIcons();
+                } else {
+                    streamingText += data.chunk;
+                    const container = document.getElementById("streaming-agent-message");
+                    if (container) {
+                        const mdBody = container.querySelector(".markdown-body");
+                        if (mdBody) {
+                            mdBody.innerHTML = (typeof marked !== "undefined" && marked.parse)
+                                ? marked.parse(streamingText)
+                                : \`<div class="whitespace-pre-wrap">\${escapeHtml(streamingText)}</div>\`;
+                            chatMessages.scrollTop = chatMessages.scrollHeight;
+                        }
+                    }
+                }
+            } else if (data.type === "stream_end") {
+                const existing = document.getElementById("streaming-agent-message");
+                if (existing) existing.remove();
             }
         };
 

@@ -1,12 +1,13 @@
 import { isCancel, text } from "@clack/prompts";
 import chalk from "chalk";
 import fs from "node:fs";
+import { stepCountIs } from "ai";
 import path from "node:path";
 import { defaultAgentConfig } from "./types";
 import { ActionTracker } from "./action-tracker";
 import { ToolExecutor } from "./tool-executor";
 import { createAgentTool } from "./agent-tools";
-import { stepCountIs, ToolLoopAgent } from "ai";
+import { streamText } from "ai";
 import { getAgentModel, MODEL_PRICING, wrapModelWithRollingMemory } from "../../ai";
 import { renderTerminalMarkdown } from "../../tui/terminal-md";
 import { runApprovalFlow, groupPending } from "./approval";
@@ -111,7 +112,7 @@ async function executeSingleTask(
     tracker: ActionTracker,
     executor: ToolExecutor,
     guiServer: GuiServer | null,
-    options?: { gui?: boolean; budget?: number; guiServer?: GuiServer },
+    options?: { gui?: boolean; budget?: number; guiServer?: GuiServer; pinnedFiles?: string[] },
 ): Promise<{ promptTokens: number; completionTokens: number }> {
     const tools = createAgentTool(executor);
 
@@ -126,11 +127,14 @@ async function executeSingleTask(
      * Dynamic Semantic File Content Getter
      * 
      * Returns the full text of GraphRAG-matched files plus any files the user
-     * manually pinned via the Web UI graph. Evaluated lazily on every LLM turn
+     * manually pinned via the Web UI graph or CLI commands. Evaluated lazily on every LLM turn
      * so that newly-pinned files are picked up immediately.
      */
     const getSemanticFilesContent = () => {
-        const pinned = guiServer ? guiServer.getPinnedFiles() : [];
+        const pinned = Array.from(new Set([
+            ...(options?.pinnedFiles || []),
+            ...(guiServer ? guiServer.getPinnedFiles() : [])
+        ]));
         const allFiles = Array.from(new Set([
             ...relatedFiles.map(f => f.path),
             ...pinned
@@ -161,28 +165,22 @@ async function executeSingleTask(
     const wrappedModel = wrapModelWithRollingMemory(rawModel, goal, skeletalMap, getSemanticFilesContent);
 
     /**
-     * Tool Loop Agent Initialization
+     * System Prompt — Operational Rules for the Agent
      * 
-     * We initialize the ToolLoopAgent wrapping the model with rolling memory.
-     * Crucially, we supply strict operational rules in the instructions to prevent the model
-     * from executing redundant loops (like reading the same file repeatedly) and force it to
-     * terminate as soon as it has gathered sufficient information to answer.
+     * These instructions are injected as the system message for every streamText
+     * call. They enforce efficiency rules that prevent the model from wasting
+     * tokens on redundant tool calls or unnecessary exploration turns.
      */
-    const agent = new ToolLoopAgent({
-        model: wrappedModel,
-        stopWhen: stepCountIs(40),
-        instructions: [
-            `Workspace root: ${config.codebasePath}`,
-            "All mutations are staged until the user explicitly types /apply.",
-            "",
-            "CORE OPERATIONAL RULES FOR MAXIMUM EFFICIENCY AND COST SAVINGS:",
-            "1. DO NOT REPEAT TOOL CALLS: If you have already called a tool with the same arguments (such as read_file with a path, or list_files), DO NOT call it again. Use the output already in the message history.",
-            "2. BE CONCISE AND DIRECT: Minimize tool execution. If you can answer a request using the Skeletal Map or cached files, do not read more files.",
-            "3. PREFER SPECIFIC TOOLS: To understand project structure, prefer calling specific analysis tools instead of looping over files.",
-            "4. TERMINATE IMMEDIATELY: As soon as you have gathered enough details to fulfill the goal or answer a question, stop executing tools and return the final text response. Do not execute any extra turns."
-        ].join("\n"),
-        tools,
-    });
+    const systemInstructions = [
+        `Workspace root: ${config.codebasePath}`,
+        "All mutations are staged until the user explicitly types /apply.",
+        "",
+        "CORE OPERATIONAL RULES FOR MAXIMUM EFFICIENCY AND COST SAVINGS:",
+        "1. DO NOT REPEAT TOOL CALLS: If you have already called a tool with the same arguments (such as read_file with a path, or list_files), DO NOT call it again. Use the output already in the message history.",
+        "2. BE CONCISE AND DIRECT: Minimize tool execution. If you can answer a request using the Skeletal Map or cached files, do not read more files.",
+        "3. PREFER SPECIFIC TOOLS: To understand project structure, prefer calling specific analysis tools instead of looping over files.",
+        "4. TERMINATE IMMEDIATELY: As soon as you have gathered enough details to fulfill the goal or answer a question, stop executing tools and return the final text response. Do not execute any extra turns."
+    ].join("\n");
 
     let attempts = 0;
     const maxAttempts = config.maxSelfHealingAttempts;
@@ -203,11 +201,45 @@ async function executeSingleTask(
             ? `Your previous changes caused errors. Please fix these issues:\n${feedback}\n\nOriginal Goal: ${goal}`
             : goal.trim();
 
-        const result = await agent.generate({
+        /**
+         * Streaming Generation via streamText()
+         * 
+         * WHAT CHANGED: Previously we used `ToolLoopAgent.generate()` which blocks
+         * until the entire response (including all tool calls) completes. The user
+         * sees nothing for 10-30 seconds on complex tasks — dead silence.
+         * 
+         * NOW: We use `streamText()` from the Vercel AI SDK which returns an
+         * async iterable `fullStream`. We iterate over it and:
+         *   - `text-delta` chunks → write to terminal stdout immediately AND
+         *     broadcast to Web UI via SSE for real-time rendering
+         *   - `tool-call` chunks → log tool usage to terminal and GUI logs
+         * 
+         * The `maxSteps: 40` parameter gives us the same multi-turn tool loop
+         * that ToolLoopAgent provided. The `onStepFinish` callback still fires
+         * after each complete step for granular logging.
+         * 
+         * HOW IT WORKS:
+         * 1. streamText() starts the LLM request and immediately returns a result
+         *    object with a `.fullStream` async iterable.
+         * 2. We `for await` over fullStream — each iteration yields one chunk.
+         * 3. For `text-delta` chunks, we call `process.stdout.write()` (no newline)
+         *    to render text character-by-character as it arrives.
+         * 4. For the Web UI, we call `guiServer.broadcastStreamChunk()` which sends
+         *    a dedicated SSE event that the browser appends to an in-progress bubble.
+         * 5. After the stream completes, we call `result.usage` (a Promise) to get
+         *    final token counts for cost tracking.
+         * 6. The accumulated full text is used for the final formatted message.
+         */
+        const result = (streamText as any)({
+            model: wrappedModel,
+            system: systemInstructions,
             prompt,
-            onStepFinish: ({ toolCalls }) => {
+            tools: tools as any,
+            stopWhen: stepCountIs(40),
+            onStepFinish: ({ toolCalls }: any) => {
                 for (const tc of toolCalls) {
-                    const preview = JSON.stringify(tc.input).slice(0, 160);
+                    const args = tc.args || tc.input;
+                    const preview = JSON.stringify(args).slice(0, 160);
                     const logMsg = `  ✓ ${tc.toolName} ${preview}${preview.length >= 160 ? "..." : ""}`;
                     console.log(
                         chalk.green("  ✓"),
@@ -223,9 +255,63 @@ async function executeSingleTask(
             }
         });
 
-        if (result.usage) {
-            totalPromptTokens += result.usage.inputTokens ?? 0;
-            totalCompletionTokens += result.usage.outputTokens ?? 0;
+        /**
+         * Real-Time Stream Consumption
+         * 
+         * We iterate the fullStream to render text chunks as they arrive.
+         * `fullStream` emits different chunk types:
+         *   - text-delta: a fragment of the LLM's text response
+         *   - tool-call: the LLM is invoking a tool (already handled by onStepFinish)
+         *   - tool-result: the result of a tool execution
+         * 
+         * We accumulate the full text ourselves so we can use it for:
+         *   1. Self-healing check (does the generated code compile?)
+         *   2. Final formatted message in the Web UI
+         *   3. Terminal markdown rendering after stream completes
+         */
+        let fullText = "";
+        let streamStartedForGui = false;
+
+        // Notify the Web UI that a new streaming message is starting
+        if (guiServer) {
+            guiServer.broadcastStreamChunk("", true); // true = start new message
+            streamStartedForGui = true;
+        }
+
+        for await (const chunk of result.fullStream) {
+            if (chunk.type === "text-delta") {
+                const textChunk = (chunk as any).text || "";
+                // Write raw text to terminal immediately — no buffering
+                process.stdout.write(textChunk);
+                fullText += textChunk;
+
+                // Send chunk to Web UI for real-time rendering
+                if (guiServer) {
+                    guiServer.broadcastStreamChunk(textChunk, false);
+                }
+            }
+        }
+
+        // Add a newline after the streamed output completes
+        if (fullText.trim()) {
+            process.stdout.write("\n");
+        }
+
+        // Finalize the Web UI streaming bubble with metadata
+        if (guiServer && streamStartedForGui) {
+            guiServer.finalizeStreamMessage();
+        }
+
+        /**
+         * Token Usage & Cost Tracking
+         * 
+         * `result.usage` is a Promise that resolves once the stream is fully
+         * consumed. We await it here to get the final token counts.
+         */
+        const usage = await result.usage;
+        if (usage) {
+            totalPromptTokens += usage.inputTokens ?? 0;
+            totalCompletionTokens += usage.outputTokens ?? 0;
         }
 
         const modelName = process.env.OPENROUTER_MODEL || "free";
@@ -265,20 +351,16 @@ async function executeSingleTask(
         }
 
         if (checkPassed) {
-            if (result.text?.trim()) {
-                const md = renderTerminalMarkdown(result.text);
-                console.log(md);
-                if (guiServer) {
-                    const turnInput = result.usage?.inputTokens ?? 0;
-                    const turnOutput = result.usage?.outputTokens ?? 0;
-                    const modelName = process.env.OPENROUTER_MODEL || "free";
-                    const rate = MODEL_PRICING[modelName] || { input: 0, output: 0 };
-                    const turnCost = ((turnInput * rate.input) + (turnOutput * rate.output)) / 1_000_000;
-                    guiServer.addAgentMessage(result.text, {
-                        tokens: { input: turnInput, output: turnOutput },
-                        cost: turnCost,
-                    });
-                }
+            // Stream already printed to terminal in real-time; add final
+            // formatted message to the Web UI chat with cost metadata
+            if (fullText.trim() && guiServer) {
+                const turnInput = usage?.inputTokens ?? 0;
+                const turnOutput = usage?.outputTokens ?? 0;
+                const turnCost = ((turnInput * rate.input) + (turnOutput * rate.output)) / 1_000_000;
+                guiServer.addAgentMessage(fullText, {
+                    tokens: { input: turnInput, output: turnOutput },
+                    cost: turnCost,
+                });
             }
             break; // Success!
         } else {
@@ -407,6 +489,8 @@ export async function runAgentMode(options?: { gui?: boolean; budget?: number; g
      */
     const tracker = new ActionTracker();
     const executor = new ToolExecutor(tracker, config);
+    const pinnedFiles: string[] = [];
+    const taskHistory: string[][] = [];
 
     let guiServer: GuiServer | null = null;
     if (options?.gui) {
@@ -513,6 +597,166 @@ export async function runAgentMode(options?: { gui?: boolean; budget?: number; g
             continue;
         }
 
+        // ── Slash Command: /add ──
+        if (userInput.toLowerCase() === "/add" || userInput.toLowerCase().startsWith("/add ")) {
+            const parts = userInput.split(/\s+/);
+            if (parts.length < 2) {
+                if (pinnedFiles.length === 0) {
+                    console.log(chalk.dim("\nNo files currently pinned to context. Use /add <path> to pin.\n"));
+                } else {
+                    console.log(chalk.bold("\n📌 Pinned Files:"));
+                    pinnedFiles.forEach(f => console.log(`  • ${f}`));
+                    console.log();
+                }
+                continue;
+            }
+            const fileRel = parts.slice(1).join(" ").trim();
+            const fullPath = path.resolve(config.codebasePath, fileRel);
+            if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+                const normPath = path.relative(config.codebasePath, fullPath).replace(/\\/g, "/");
+                if (!pinnedFiles.includes(normPath)) {
+                    pinnedFiles.push(normPath);
+                    if (guiServer) {
+                        guiServer.updateState(s => {
+                            if (!s.pinnedFiles.includes(normPath)) {
+                                s.pinnedFiles.push(normPath);
+                            }
+                        });
+                    }
+                    console.log(chalk.green(`\n✓ Pinned ${normPath} to LLM context.\n`));
+                } else {
+                    console.log(chalk.yellow(`\n⚠️  ${normPath} is already pinned.\n`));
+                }
+            } else {
+                console.log(chalk.red(`\n❌ File not found or not a valid file: ${fileRel}\n`));
+            }
+            continue;
+        }
+
+        // ── Slash Command: /drop ──
+        if (userInput.toLowerCase() === "/drop" || userInput.toLowerCase().startsWith("/drop ")) {
+            const parts = userInput.split(/\s+/);
+            if (parts.length < 2) {
+                console.log(chalk.yellow("\n⚠️  Please specify a file path to drop: /drop <path>\n"));
+                continue;
+            }
+            const fileRel = parts.slice(1).join(" ").trim();
+            const fullPath = path.resolve(config.codebasePath, fileRel);
+            const normPath = path.relative(config.codebasePath, fullPath).replace(/\\/g, "/");
+            const index = pinnedFiles.indexOf(normPath);
+            if (index !== -1) {
+                pinnedFiles.splice(index, 1);
+                if (guiServer) {
+                    guiServer.updateState(s => {
+                        s.pinnedFiles = s.pinnedFiles.filter(p => p !== normPath);
+                    });
+                }
+                console.log(chalk.green(`\n✓ Dropped ${normPath} from pinned context.\n`));
+            } else {
+                console.log(chalk.yellow(`\n⚠️  ${fileRel} was not pinned.\n`));
+            }
+            continue;
+        }
+
+        // ── Slash Command: /clear ──
+        if (userInput.toLowerCase() === "/clear") {
+            console.clear();
+            process.stdout.write("\x1Bc");
+            if (guiServer) {
+                guiServer.updateState(s => {
+                    s.messages = [];
+                    s.logs = [];
+                });
+            }
+            console.log(chalk.dim("\nConsole and chat history cleared.\n"));
+            continue;
+        }
+
+        // ── Slash Command: /tokens ──
+        if (userInput.toLowerCase() === "/tokens") {
+            const modelName = process.env.OPENROUTER_MODEL || "free";
+            const rate = MODEL_PRICING[modelName] || { input: 0, output: 0 };
+            const cost = ((sessionPromptTokens * rate.input) + (sessionCompletionTokens * rate.output)) / 1_000_000;
+            console.log(chalk.bold("\n📊 Token Usage & Cost (Current Session):"));
+            console.log(`  Input Tokens:      ${sessionPromptTokens}`);
+            console.log(`  Output Tokens:     ${sessionCompletionTokens}`);
+            console.log(`  Total Tokens:      ${sessionPromptTokens + sessionCompletionTokens}`);
+            console.log(`  Estimated Cost:    $${cost.toFixed(6)} (${modelName})\n`);
+            continue;
+        }
+
+        // ── Slash Command: /diff ──
+        if (userInput.toLowerCase() === "/diff") {
+            const pending = tracker.getPendingMutations();
+            if (pending.length === 0) {
+                console.log(chalk.dim("\nNo staged changes.\n"));
+            } else {
+                console.log(chalk.bold("\n🔍 Current Staged Changes:"));
+                const groups = groupPending(pending);
+                for (const g of groups) {
+                    console.log(`\n--- ${g.label} (${g.tier.toUpperCase()} risk: ${g.reason}) ---`);
+                    if (g.patch) {
+                        const lines = g.patch.split("\n");
+                        for (const line of lines) {
+                            if (line.startsWith("+")) {
+                                console.log(chalk.green(line));
+                            } else if (line.startsWith("-")) {
+                                console.log(chalk.red(line));
+                            } else if (line.startsWith("@")) {
+                                console.log(chalk.cyan(line));
+                            } else {
+                                console.log(line);
+                            }
+                        }
+                    } else {
+                        console.log(chalk.dim("  (No code diff for this action)"));
+                    }
+                }
+                console.log();
+            }
+            continue;
+        }
+
+        // ── Slash Command: /undo ──
+        if (userInput.toLowerCase() === "/undo") {
+            const lastActionIds = taskHistory.pop();
+            if (!lastActionIds || lastActionIds.length === 0) {
+                console.log(chalk.yellow("\n⚠️  No recent task changes to undo.\n"));
+            } else {
+                executor.rollbackActions(lastActionIds);
+                console.log(chalk.green(`\n✓ Undid changes for the last task (${lastActionIds.length} actions rolled back).\n`));
+                if (guiServer) {
+                    const pending = tracker.getPendingMutations();
+                    const groups = groupPending(pending).map((g) => ({
+                        label: g.label,
+                        tier: g.tier,
+                        reason: g.reason,
+                        patch: g.patch,
+                    }));
+                    guiServer.updateState((s) => {
+                        s.stagedGroups = groups;
+                    });
+                }
+            }
+            continue;
+        }
+
+        // ── Slash Command: /help ──
+        if (userInput.toLowerCase() === "/help") {
+            console.log(chalk.bold("\n💡 Available Commands:"));
+            console.log(`  ${chalk.cyan("/add <path>")}   - Pin a file to the context for all future prompts`);
+            console.log(`  ${chalk.cyan("/drop <path>")}  - Remove a pinned file from the context`);
+            console.log(`  ${chalk.cyan("/clear")}        - Clear the terminal screen and Web UI chat logs`);
+            console.log(`  ${chalk.cyan("/tokens")}       - Show token usage and estimated cost for current session`);
+            console.log(`  ${chalk.cyan("/diff")}         - View all currently staged changes as a unified diff`);
+            console.log(`  ${chalk.cyan("/undo")}         - Discard staged changes from the most recent task`);
+            console.log(`  ${chalk.cyan("/rewind")}       - Open the git checkpoint rewind menu to undo turns`);
+            console.log(`  ${chalk.cyan("/apply")}        - Review, approve, and apply all staged changes`);
+            console.log(`  ${chalk.cyan("/exit")}         - Exit agent mode`);
+            console.log();
+            continue;
+        }
+
         // ── Regular Task Execution ──
         if (guiServer) {
             guiServer.updateState((s) => {
@@ -522,9 +766,20 @@ export async function runAgentMode(options?: { gui?: boolean; budget?: number; g
             });
         }
 
+        const actionsBefore = tracker.getActions().map(a => a.id);
+
         const { promptTokens, completionTokens } = await executeSingleTask(
-            userInput, config, tracker, executor, guiServer, options
+            userInput, config, tracker, executor, guiServer, {
+                ...options,
+                pinnedFiles,
+            }
         );
+
+        const actionsAfter = tracker.getActions().map(a => a.id);
+        const newActionIds = actionsAfter.filter(id => !actionsBefore.includes(id));
+        if (newActionIds.length > 0) {
+            taskHistory.push(newActionIds);
+        }
 
         sessionPromptTokens += promptTokens;
         sessionCompletionTokens += completionTokens;
