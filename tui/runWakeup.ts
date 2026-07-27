@@ -50,6 +50,8 @@ async function runWebUiMode(options?: { budget?: number }) {
     // runAgentMode's internal loop handles waiting for goals from the browser
     await runAgentMode({ gui: true, budget: options?.budget, guiServer });
   } catch (err) {
+
+    
     console.error("Web UI execution error:", err);
     guiServer.updateState((s) => {
       s.status = "failed";
