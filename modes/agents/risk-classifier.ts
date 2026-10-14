@@ -168,3 +168,41 @@ export function classifyFileMutation(
         requiresTypedConfirmation: false,
     };
 }
+
+/**
+ * Addition to: modes/agents/risk-classifier.ts
+ */
+
+export function classifyBrowserAction(toolName: string, args: Record<string, any>): {
+    riskTier: 'safe' | 'low' | 'high';
+    riskReason: string;
+} {
+    if (toolName === "browser_navigate" || toolName === "browser_snapshot" || toolName === "browser_screenshot") {
+        return {
+            riskTier: "safe",
+            riskReason: "Browser inspection and navigation are non-destructive read operations."
+        };
+    }
+
+    if (toolName === "browser_click") {
+        const sensitiveWords = ["pay", "purchase", "checkout", "delete", "destroy", "submit", "confirm", "order"];
+        const targetDesc = JSON.stringify(args).toLowerCase();
+        const hasSensitiveWord = sensitiveWords.some(w => targetDesc.includes(w));
+
+        if (hasSensitiveWord) {
+            return {
+                riskTier: "high",
+                riskReason: "Click action targets a potentially irreversible button (payment, deletion, or submission)."
+            };
+        }
+        return {
+            riskTier: "low",
+            riskReason: "Standard UI element click."
+        };
+    }
+
+    return {
+        riskTier: "low",
+        riskReason: "Standard browser input interaction."
+    };
+}

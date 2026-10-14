@@ -1,0 +1,101 @@
+================================================================================
+                        HIGH-LEVEL DESIGN (HLD) — SUMMARY
+                          Source: GeeksforGeeks
+================================================================================
+
+1. WHAT IS HIGH-LEVEL DESIGN (HLD)?
+-----------------------------------
+HLD is the initial phase in software development where the overall structure of a
+system is planned. It focuses on how different components work together WITHOUT
+delving into internal coding or implementation details. Also known as
+"macro-level design."
+
+Key stakeholders: Developers, architects, product managers — ensures alignment
+on project goals.
+
+2. TYPICAL REQUEST FLOW (User → Data → Response)
+--------------------------------------------------
+  User → Edge/Gateway (CDN, TLS, DDoS protection, Load Balancer, API Gateway)
+       → Application Services (auth, business logic)
+       → Data Layer (SQL/NoSQL, cache, object storage)
+       → Async layer (queues, workers, emails, webhooks)
+       → Observability (logs, metrics, traces, alerts)
+       → Response flows back via gateway/edge
+
+3. MAIN COMPONENTS OF HLD
+--------------------------
+  • System Architecture     – High-level structure & component relationships
+  • Modules & Components    – Breakdown of the system into distinct functional units
+  • Data Flow Diagrams      – Show how data moves through the system
+  • Interface Design        – APIs for system integration & UIs for user interaction
+  • Technology Stack        – Languages, frameworks, databases, tools chosen
+  • Deployment Architecture – Server configs, cloud infra, networking
+
+4. HLD DOCUMENT
+----------------
+Contains data flows, flowcharts, and data structures. Describes connections
+between system components and operations. Architecture design for each module
+based on functional requirements.
+
+5. HLD vs LLD
+-------------
+  HLD (Macro): General system design, tradeoffs between frameworks, components,
+               databases — focuses on what the business needs and how the
+               system works overall.
+
+  LLD (Micro): Smaller, specific details — class diagrams, methods, data
+               structures, algorithms — focuses on how each part is implemented.
+
+6. DESIGNING SCALABLE HLD SYSTEMS — ROADMAP
+-------------------------------------------
+  1. Capacity Estimation    – Predict resources (CPU, memory, bandwidth) needed
+                              for expected workload. Ensures system handles
+                              current & future demand.
+
+  2. HTTP Methods            – GET (retrieve), POST (create), PUT (replace),
+                              PATCH (partial update), DELETE (remove).
+
+  3. WebSockets              – Full-duplex, real-time two-way communication over
+                              a persistent connection. Low-latency. Use cases:
+                              chat, gaming, live notifications, dashboards.
+
+  4. Polling                 – Short polling (client polls at fixed intervals)
+                              vs Long polling (server responds only when new
+                              data is available). Long polling is preferred
+                              (fewer requests).
+
+  5. Server-Sent Events (SSE)– One-way communication from server to client over
+                              HTTP. Server pushes data as it becomes available.
+                              Use case: real-time streaming.
+
+  6. Filtering               – Selecting data matching specific conditions from
+                              a larger dataset (e.g., GET /products?category=
+                              electronics&minPrice=10000).
+
+  7. Rate Limiting           – Restricts number of events/requests a sender can
+                              make in a given time window. Blocks further
+                              requests once threshold is reached.
+
+  8. Resiliency              – Handling faults & failures via replication,
+                              redundancy, and availability. Essential for
+                              complex systems & interviews.
+
+  9. Paging (Pagination)     – Dividing large datasets into smaller pages.
+                              Offset-based paging vs Cursor-based paging.
+                              (e.g., GET /products?page=2&limit=20)
+
+  10. Logging                – Recording events, transactions, and system flow.
+                              Types: Centralized logging, Distributed logging,
+                              Cloud-based logging.
+
+7. KEY TAKEAWAY
+---------------
+HLD is the blueprint stage of system design — it defines the architecture,
+component interactions, data flow, technology choices, and scalability
+strategies without getting into code-level details. It ensures all stakeholders
+share a common technical vision before moving to implementation (LLD).
+
+================================================================================
+                        Summary created from:
+  https://www.geeksforgeeks.org/system-design/what-is-high-level-design-learn-system-design/
+================================================================================

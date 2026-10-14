@@ -16,3 +16,5 @@ Each doc answers four questions in plain, non-jargon language:
 - [risk-tiered-approval.md](./risk-tiered-approval.md) — classifies staged actions by risk and adjusts the approval flow per tier
 - [session-rewind.md](./session-rewind.md) — browse and hard-reset to any past auto-commit checkpoint from a CLI menu
 - [competitive-analysis.md](./competitive-analysis.md) — audit against Claude Code / OpenCode / OpenClaw, plus a prioritized improvement roadmap
+- [pillar-1-browser-agent-guide.md](./pillar-1-browser-agent-guide.md) — end-to-end architecture, implementation code, and test suite for browser control (CDP & ARIA snapshotting)
+

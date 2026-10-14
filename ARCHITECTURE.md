@@ -61,3 +61,14 @@ Code modifications must never blindly overwrite a user's working tree before exp
 | **AST Repo Map** | Global Outline | [utils/repo-map.ts](file:///c:/Users/abhinav/OneDrive/Desktop/openclaw/utils/repo-map.ts) | Extracts classes, functions, and line ranges into an overarching structural map. |
 | **Import Crawling** | 2-Hop Skeletons | [modes/agents/orchestrator.ts:37-107](file:///c:/Users/abhinav/OneDrive/Desktop/openclaw/modes/agents/orchestrator.ts#L37-L107) | Resolves imported modules recursively and extracts their signatures without bloating tokens. |
 | **Staged Summary** | Overlay Visibility | [modes/agents/tool-executor.ts](file:///c:/Users/abhinav/OneDrive/Desktop/openclaw/modes/agents/tool-executor.ts) | Injects a bulleted list of all uncommitted files into the system prompt on every turn so the agent is never blind to its own staged work. |
+| **Browser Control Engine** | Live Web Agency | [services/browser-service.ts](file:///c:/Users/abhinav/OneDrive/Desktop/openclaw/services/browser-service.ts) | Connects via CDP (`localhost:9222`) or persistent Chromium to navigate, extract semantic ARIA trees, and execute DOM interactions. |
+
+---
+
+## 4. Omni-Action Desktop Architecture: Pillar 1 (Browser Integration)
+
+- **CDP Attachment**: Connects to the user's active Chrome browser session on port `9222`, preserving active logins, cookies, and 2FA states without credential re-entry.
+- **Persistent Sandbox Fallback**: If port `9222` is unavailable, launches Chromium in `./.openclaw/browser-data`.
+- **Semantic ARIA Snapshot**: Filters raw HTML down to actionable DOM nodes with numeric identifiers (`[ref=1]`, `[ref=2]`), preventing LLM context token bloat.
+- **Risk-Tiered Execution**: Classified via [modes/agents/risk-classifier.ts](file:///c:/Users/abhinav/OneDrive/Desktop/openclaw/modes/agents/risk-classifier.ts), ensuring financial/sensitive actions require human approval.
+
