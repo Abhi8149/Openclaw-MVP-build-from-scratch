@@ -138,15 +138,14 @@ export class ToolExecutor {
 
     readFile(rel: string): string {
         this.assertNotExcluded(rel, "read_file");
-        const abs = this.resolveSafe(rel);
-        if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+        // Read through getEffectiveText to seamlessly access staged/overlay files in memory
+        const text = this.getEffectiveText(rel);
+        if (text === undefined) {
             throw new Error(`File not found: ${rel}`);
         }
-        const st = fs.statSync(abs);
-        if (st.size > this.config.maxFileSizeToRead) {
+        if (Buffer.byteLength(text, "utf8") > this.config.maxFileSizeToRead) {
             throw new Error(`File too large: ${rel}`);
         }
-        const text = fs.readFileSync(abs, "utf8");
         this.tracker.log({
             type: "code_analysis",
             path: this.norm(rel),
@@ -267,7 +266,45 @@ export class ToolExecutor {
         if (fs.statSync(abs).isDirectory()) walk(abs, "");
         else lines.push(path.relative(this.config.codebasePath, abs));
 
-        const out = lines.sort().join("\n");
+        // Merge in staged files from memory overlay and remove staged deletions
+        const outSet = new Set<string>();
+        for (const line of lines) {
+            const cleanPath = line.endsWith("/") ? line.slice(0, -1) : line;
+            if (!this.deleted.has(this.norm(path.join(rel, cleanPath)))) {
+                outSet.add(line);
+            }
+        }
+
+        const relNorm = this.norm(rel);
+        for (const stagedKey of this.overlay.keys()) {
+            if (this.excluded(stagedKey)) continue;
+            let subPath = "";
+            if (relNorm === "" || relNorm === ".") {
+                subPath = stagedKey;
+            } else if (stagedKey.startsWith(relNorm + "/")) {
+                subPath = stagedKey.slice(relNorm.length + 1);
+            }
+            if (subPath) {
+                if (recursive) {
+                    const parts = subPath.split("/");
+                    let acc = "";
+                    for (let i = 0; i < parts.length - 1; i++) {
+                        acc += parts[i] + "/";
+                        outSet.add(acc);
+                    }
+                    outSet.add(subPath);
+                } else {
+                    const firstSlash = subPath.indexOf("/");
+                    if (firstSlash === -1) {
+                        outSet.add(subPath);
+                    } else {
+                        outSet.add(subPath.slice(0, firstSlash + 1));
+                    }
+                }
+            }
+        }
+
+        const out = [...outSet].sort().join("\n");
         this.tracker.log({
             type: "code_analysis",
             path: this.norm(rel),
@@ -328,7 +365,22 @@ export class ToolExecutor {
             results.push(relP);
         }
 
-        const out = [...new Set(results)].sort().join("\n");
+        // Include matching staged files from memory overlay
+        const rootNorm = this.norm(rootRel);
+        for (const stagedKey of this.overlay.keys()) {
+            if (this.excluded(stagedKey)) continue;
+            const inRoot = (rootNorm === "" || rootNorm === "." || stagedKey.startsWith(rootNorm + "/"));
+            if (inRoot && (nameRe.test(stagedKey) || nameRe.test(path.basename(stagedKey)))) {
+                if (contentQuery) {
+                    const text = this.overlay.get(stagedKey) || "";
+                    if (!text.includes(contentQuery)) continue;
+                }
+                results.push(stagedKey);
+            }
+        }
+
+        const filtered = results.filter(p => !this.deleted.has(this.norm(p)));
+        const out = [...new Set(filtered)].sort().join("\n");
         this.tracker.log({
             type: "code_analysis",
             path: this.norm(rootRel),
@@ -621,6 +673,30 @@ export class ToolExecutor {
 
   hasStagedMutations(): boolean {
     return this.overlay.size > 0 || this.deleted.size > 0;
+  }
+
+  /**
+   * Returns list of relative paths currently staged in memory overlay
+   */
+  getStagedPaths(): string[] {
+    return Array.from(this.overlay.keys());
+  }
+
+  /**
+   * Returns a concise human-readable bulleted summary of staged uncommitted files
+   * so LLMs and prompts know what uncommitted changes currently exist in RAM.
+   */
+  getStagedSummary(): string {
+    const entries: string[] = [];
+    for (const [key] of this.overlay.entries()) {
+        const abs = this.resolveSafe(key);
+        const existsOnDisk = fs.existsSync(abs);
+        entries.push(`- ${key} (${existsOnDisk ? "modified" : "created"}, staged in memory overlay)`);
+    }
+    for (const key of this.deleted) {
+        entries.push(`- ${key} (deleted, staged in memory overlay)`);
+    }
+    return entries.length > 0 ? entries.join("\n") : "None";
   }
 
   tempWriteStaged(): () => void {

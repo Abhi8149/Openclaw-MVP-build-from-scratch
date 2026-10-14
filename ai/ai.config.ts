@@ -52,7 +52,6 @@ export async function getAgentModel(goal?: string){
     // Dynamic routing via OpenRouter built-in auto-router if a goal is provided and model is auto
     if (modelId === "openrouter/auto" && goal) {
         const tradeoff = calculateTradeoff(goal);
-        console.log(chalk.cyan(`🔄 OpenRouter Auto-Router active. Dynamic Tradeoff: ${tradeoff.toFixed(1)}/10.0 (0=pure capability, 10=max savings)...`));
         
         const settings: any = {
             plugins: [{

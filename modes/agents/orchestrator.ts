@@ -1,4 +1,4 @@
-import { isCancel, text } from "@clack/prompts";
+import { isCancel, text, spinner } from "@clack/prompts";
 import chalk from "chalk";
 import fs from "node:fs";
 import { stepCountIs } from "ai";
@@ -112,8 +112,16 @@ async function executeSingleTask(
     tracker: ActionTracker,
     executor: ToolExecutor,
     guiServer: GuiServer | null,
-    options?: { gui?: boolean; budget?: number; guiServer?: GuiServer; pinnedFiles?: string[] },
-): Promise<{ promptTokens: number; completionTokens: number }> {
+    options?: {
+        gui?: boolean;
+        budget?: number;
+        guiServer?: GuiServer;
+        pinnedFiles?: string[];
+        getScratchpad?: () => string;
+        setScratchpad?: (val: string) => void;
+        conversationHistory?: Array<{ role: "user" | "assistant"; content: string }>;
+    },
+): Promise<{ promptTokens: number; completionTokens: number; fullText: string }> {
     const tools = createAgentTool(executor);
 
     // GraphRAG: Find the top 3 semantically related files based on task intent
@@ -126,25 +134,29 @@ async function executeSingleTask(
     /**
      * Dynamic Semantic File Content Getter
      * 
-     * Returns the full text of GraphRAG-matched files plus any files the user
-     * manually pinned via the Web UI graph or CLI commands. Evaluated lazily on every LLM turn
-     * so that newly-pinned files are picked up immediately.
+     * Returns the full text of GraphRAG-matched files, manually pinned files,
+     * PLUS any files currently staged in memory overlay. Evaluated lazily on every LLM turn.
      */
     const getSemanticFilesContent = () => {
         const pinned = Array.from(new Set([
             ...(options?.pinnedFiles || []),
             ...(guiServer ? guiServer.getPinnedFiles() : [])
         ]));
+        // Include any currently uncommitted staged files from memory overlay
+        const stagedPaths = executor.getStagedPaths();
         const allFiles = Array.from(new Set([
             ...relatedFiles.map(f => f.path),
-            ...pinned
+            ...pinned,
+            ...stagedPaths
         ]));
         
         const mainContent = allFiles.map(p => {
             try {
-                const fullPath = path.join(config.codebasePath, p);
-                if (fs.existsSync(fullPath)) {
-                    return `--- File: ${p} ---\n${fs.readFileSync(fullPath, "utf8")}`;
+                // Seamlessly retrieve content from in-memory overlay if staged, or disk otherwise
+                const content = executor.getEffectiveText(p);
+                if (content !== undefined) {
+                    const tag = stagedPaths.includes(p) ? " (Uncommitted Staged File)" : "";
+                    return `--- File: ${p}${tag} ---\n${content}`;
                 }
             } catch {}
             return "";
@@ -160,9 +172,18 @@ async function executeSingleTask(
     // Skeletal Map: Get line-by-line class and function mappings
     const skeletalMap = generateRepoMap(config.codebasePath, config.excludePatterns);
 
-    // Rolling State Memory: Wrap model to summarize history and keep context compact
+    // Rolling State Memory: Wrap model to summarize history and keep context compact across tasks
     const rawModel = await getAgentModel(goal);
-    const wrappedModel = wrapModelWithRollingMemory(rawModel, goal, skeletalMap, getSemanticFilesContent);
+    const getStagedSummary = () => executor.getStagedSummary();
+    const wrappedModel = wrapModelWithRollingMemory(
+        rawModel,
+        goal,
+        skeletalMap,
+        getSemanticFilesContent,
+        options?.getScratchpad,
+        options?.setScratchpad,
+        getStagedSummary
+    );
 
     /**
      * System Prompt — Operational Rules for the Agent
@@ -187,6 +208,7 @@ async function executeSingleTask(
     let feedback = "";
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
+    let finalCompletedText = "";
 
     while (attempts < maxAttempts) {
         attempts++;
@@ -230,22 +252,29 @@ async function executeSingleTask(
          *    final token counts for cost tracking.
          * 6. The accumulated full text is used for the final formatted message.
          */
+        const spin = spinner();
+        spin.start("🤖 Processing task...");
+
+        const historyMessages = (options?.conversationHistory || []).map((m) => ({
+            role: m.role,
+            content: m.content,
+        }));
+
         const result = (streamText as any)({
             model: wrappedModel,
             system: systemInstructions,
-            prompt,
+            messages: [
+                ...historyMessages,
+                { role: "user", content: prompt }
+            ],
             tools: tools as any,
             stopWhen: stepCountIs(40),
             onStepFinish: ({ toolCalls }: any) => {
                 for (const tc of toolCalls) {
                     const args = tc.args || tc.input;
-                    const preview = JSON.stringify(args).slice(0, 160);
-                    const logMsg = `  ✓ ${tc.toolName} ${preview}${preview.length >= 160 ? "..." : ""}`;
-                    console.log(
-                        chalk.green("  ✓"),
-                        chalk.bold(String(tc.toolName)),
-                        chalk.dim(preview + (preview.length >= 160 ? "..." : "")),
-                    );
+                    const preview = JSON.stringify(args).slice(0, 80);
+                    const logMsg = `  ✓ ${tc.toolName} ${preview}${preview.length >= 80 ? "..." : ""}`;
+                    spin.message(`⚡ Executing ${tc.toolName} ${preview}${preview.length >= 80 ? "..." : ""}`);
                     if (guiServer) {
                         guiServer.updateState((s) => {
                             s.logs.push(logMsg);
@@ -271,6 +300,7 @@ async function executeSingleTask(
          */
         let fullText = "";
         let streamStartedForGui = false;
+        let spinStopped = false;
 
         // Notify the Web UI that a new streaming message is starting
         if (guiServer) {
@@ -280,6 +310,10 @@ async function executeSingleTask(
 
         for await (const chunk of result.fullStream) {
             if (chunk.type === "text-delta") {
+                if (!spinStopped) {
+                    spin.stop("✓ Task execution complete!");
+                    spinStopped = true;
+                }
                 const textChunk = (chunk as any).text || "";
                 // Write raw text to terminal immediately — no buffering
                 process.stdout.write(textChunk);
@@ -290,6 +324,10 @@ async function executeSingleTask(
                     guiServer.broadcastStreamChunk(textChunk, false);
                 }
             }
+        }
+
+        if (!spinStopped) {
+            spin.stop("✓ Step completed.");
         }
 
         // Add a newline after the streamed output completes
@@ -351,6 +389,7 @@ async function executeSingleTask(
         }
 
         if (checkPassed) {
+            finalCompletedText = fullText;
             // Stream already printed to terminal in real-time; add final
             // formatted message to the Web UI chat with cost metadata
             if (fullText.trim() && guiServer) {
@@ -376,7 +415,7 @@ async function executeSingleTask(
         }
     }
 
-    return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens };
+    return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, fullText: finalCompletedText };
 }
 
 /**
@@ -491,6 +530,8 @@ export async function runAgentMode(options?: { gui?: boolean; budget?: number; g
     const executor = new ToolExecutor(tracker, config);
     const pinnedFiles: string[] = [];
     const taskHistory: string[][] = [];
+    let sessionScratchpad = "";
+    const conversationHistory: Array<{ role: "user" | "assistant"; content: string }> = [];
 
     let guiServer: GuiServer | null = null;
     if (options?.gui) {
@@ -662,13 +703,15 @@ export async function runAgentMode(options?: { gui?: boolean; budget?: number; g
         if (userInput.toLowerCase() === "/clear") {
             console.clear();
             process.stdout.write("\x1Bc");
+            sessionScratchpad = "";
+            conversationHistory.length = 0;
             if (guiServer) {
                 guiServer.updateState(s => {
                     s.messages = [];
                     s.logs = [];
                 });
             }
-            console.log(chalk.dim("\nConsole and chat history cleared.\n"));
+            console.log(chalk.dim("\nConsole, chat history, and scratchpad memory cleared.\n"));
             continue;
         }
 
@@ -768,12 +811,30 @@ export async function runAgentMode(options?: { gui?: boolean; budget?: number; g
 
         const actionsBefore = tracker.getActions().map(a => a.id);
 
-        const { promptTokens, completionTokens } = await executeSingleTask(
+        const { promptTokens, completionTokens, fullText } = await executeSingleTask(
             userInput, config, tracker, executor, guiServer, {
                 ...options,
                 pinnedFiles,
+                getScratchpad: () => sessionScratchpad,
+                setScratchpad: (val) => { sessionScratchpad = val; },
+                conversationHistory,
             }
         );
+
+        // Record conversational history across tasks
+        if (userInput) {
+            conversationHistory.push({ role: "user", content: userInput });
+            if (fullText) {
+                // Keep assistant response concise in history to prevent unbounded token growth
+                const truncatedResponse = fullText.length > 1000
+                    ? fullText.slice(0, 1000) + "... [truncated in history]"
+                    : fullText;
+                conversationHistory.push({ role: "assistant", content: truncatedResponse });
+            }
+            if (conversationHistory.length > 10) {
+                conversationHistory.splice(0, conversationHistory.length - 10);
+            }
+        }
 
         const actionsAfter = tracker.getActions().map(a => a.id);
         const newActionIds = actionsAfter.filter(id => !actionsBefore.includes(id));

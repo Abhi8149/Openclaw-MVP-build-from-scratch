@@ -151,4 +151,77 @@ describe("Intent-Driven Retrieval & Rolling Memory", () => {
         expect(cppSkeleton).toContain("- class.name: Calculator");
         expect(cppSkeleton).toContain("- function.name: add");
     });
+
+    test("ToolExecutor seamlessly reads in-memory staged files via readFile and listFiles", () => {
+        const dir = createTempDir();
+        try {
+            const tracker = new (require("../modes/agents/action-tracker").ActionTracker)();
+            const config = (require("../modes/agents/types").defaultAgentConfig)();
+            config.codebasePath = dir;
+
+            const executor = new (require("../modes/agents/tool-executor").ToolExecutor)(tracker, config);
+
+            // Stage a new file that has NEVER been written to disk
+            executor.createFile("staged-sample.cpp", "#include <iostream>\nint main() { return 0; }");
+
+            // 1. File does NOT exist on physical disk
+            expect(fs.existsSync(path.join(dir, "staged-sample.cpp"))).toBe(false);
+
+            // 2. readFile still reads it from in-memory overlay
+            const content = executor.readFile("staged-sample.cpp");
+            expect(content).toContain("int main()");
+
+            // 3. listFiles includes the staged file
+            const listed = executor.listFiles(".", false);
+            expect(listed).toContain("staged-sample.cpp");
+
+            // 4. searchFiles finds the staged file
+            const searched = executor.searchFiles(".", "*.cpp", "main");
+            expect(searched).toContain("staged-sample.cpp");
+
+            // 5. getStagedSummary describes it accurately
+            const summary = executor.getStagedSummary();
+            expect(summary).toContain("staged-sample.cpp (created, staged in memory overlay)");
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+        }
+    });
+
+    test("wrapModelWithRollingMemory reads/writes session scratchpad and includes staged summary", async () => {
+        let capturedOptions: any = null;
+        const mockModel = {
+            specificationVersion: "v1",
+            provider: "mock",
+            modelId: "mock",
+            defaultObjectGenerationMode: "json",
+            doGenerate: async (opts: any) => {
+                capturedOptions = opts;
+                return { text: "mock answer", finishReason: "stop" };
+            }
+        };
+
+        let sessionScratchpad = "- Previous finding: created placement.cpp";
+        const stagedSummary = "- placement.cpp (created, staged in memory overlay)";
+
+        const wrapped = wrapModelWithRollingMemory(
+            mockModel,
+            "re-modify placement.cpp",
+            "repo-map",
+            "file-content",
+            () => sessionScratchpad,
+            (newVal) => { sessionScratchpad = newVal; },
+            () => stagedSummary
+        );
+
+        await wrapped.doGenerate({
+            prompt: [{ role: "user", content: "please update binarySearch" }]
+        });
+
+        const systemContent = capturedOptions.prompt[0].content;
+        expect(systemContent).toContain("Currently Staged (Uncommitted) Files in Memory Overlay:");
+        expect(systemContent).toContain(stagedSummary);
+        expect(systemContent).toContain("Current Scratchpad (summary of past execution state):");
+        expect(systemContent).toContain(sessionScratchpad);
+    });
 });
+

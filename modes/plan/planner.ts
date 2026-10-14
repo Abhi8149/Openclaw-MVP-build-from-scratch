@@ -8,6 +8,7 @@ import {
 } from "ai";
 import { z } from "zod";
 import chalk from "chalk";
+import { spinner } from "@clack/prompts";
 import { getAgentModel } from "../../ai";
 import { ActionTracker } from "../agents/action-tracker";
 import { ToolExecutor } from "../agents/tool-executor";
@@ -100,7 +101,7 @@ const PLAN_INSTRUCTIONS = (codebase: string, hasWeb: boolean) =>
     hasWeb
       ? "Web tools are available (web_search/web_crawl/fetch_url). Use only when needed."
       : "Web tools are unavailable (no FIRECRAWL_API_KEY).",
-    "Output must match the provided JSON schema.",
+    "CRITICAL REQUIREMENT: Respond ONLY with a valid raw JSON object matching the schema. Do NOT include any introductory conversational text, markdown codeblocks (```json), or extra text before or after the JSON.",
     "Keep it short: 1–15 steps.",
   ].join("\n");
 
@@ -109,36 +110,68 @@ export async function generatePlan(goal: string) {
   const tracker = new ActionTracker();
   const executor = new ToolExecutor(tracker, config);
 
-
   const hasWeb = !!process.env.FIRECRAWL_API_KEY;
+  const rawModel = await getAgentModel(goal);
   const model = wrapLanguageModel({
-    model: await getAgentModel(goal),
-    middleware:extractJsonMiddleware()
-  })
-
-
-  const tools = { ...readOnlyTools(executor) , ...(hasWeb ? createWebTools(tracker) : {}) };
-
-  console.log(chalk.cyan("\n🔍 Researching & drafting a plan…\n"));
-
-  const result = await generateText({
-    model,
-    tools,
-    stopWhen:stepCountIs(20),
-    system:PLAN_INSTRUCTIONS(config.codebasePath , hasWeb),
-    prompt:`User goal: \n${goal}`,
-    output:Output.object({schema:planSchema})
+    model: rawModel,
+    middleware: extractJsonMiddleware()
   });
 
-  const validated = planSchema.parse(result.output);
+  const tools = { ...readOnlyTools(executor), ...(hasWeb ? createWebTools(tracker) : {}) };
 
-  const steps:Planstep[] = validated.steps.map((s , i)=>({
-    id:`step-${i+1}`,
-    title:s.title,
-    description:s.description,
-    hints:s.hints,
-    complexity:s.complexity ?? "medium"
+  const s = spinner();
+  s.start("🔍 Analyzing codebase & researching goal...");
+
+  let validatedObj: any = null;
+
+  try {
+    const result = await generateText({
+      model,
+      tools,
+      stopWhen: stepCountIs(20),
+      system: PLAN_INSTRUCTIONS(config.codebasePath, hasWeb),
+      prompt: `User goal: \n${goal}`,
+      output: Output.object({ schema: planSchema }),
+      onStepFinish: ({ toolCalls }: any) => {
+        if (toolCalls && toolCalls.length > 0) {
+          for (const tc of toolCalls) {
+            const args = tc.args || tc.input || {};
+            const preview = JSON.stringify(args).slice(0, 60);
+            s.message(`⚡ Executing ${tc.toolName} ${preview}${preview.length >= 60 ? "..." : ""}`);
+          }
+        } else {
+          s.message("📝 Drafting implementation plan...");
+        }
+      }
+    });
+    validatedObj = result.output;
+    s.stop("✓ Plan research complete!");
+  } catch (err: any) {
+    // Fallback: If model returned text with conversational intro (e.g. "Now I have..."), extract the raw JSON string
+    const rawText = err?.text || err?.cause?.text || "";
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        validatedObj = planSchema.parse(parsed);
+        s.stop("✓ Plan research complete!");
+      } catch {}
+    }
+    if (!validatedObj) {
+      s.stop("❌ Plan drafting failed");
+      throw err;
+    }
+  }
+
+  const validated = planSchema.parse(validatedObj);
+
+  const steps: Planstep[] = validated.steps.map((s, i) => ({
+    id: `step-${i + 1}`,
+    title: s.title,
+    description: s.description,
+    hints: s.hints,
+    complexity: s.complexity ?? "medium"
   }));
 
-  return {goal , researchSummary:validated.researchSummary , steps}
+  return { goal, researchSummary: validated.researchSummary, steps };
 }
