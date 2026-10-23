@@ -1,0 +1,16 @@
+2026-10-23 17:57:17.637: [INFO] CurrentProfilePath: C:\Users\abhinav\OneDrive\Desktop\openclaw\.openclaw\browser-data\Default
+2026-10-23 17:57:17.637: [INFO] Profiles total count: 1
+2026-10-23 17:57:17.638: [INFO] Profile: name=Your Chromium path=C:\Users\abhinav\OneDrive\Desktop\openclaw\.openclaw\browser-data\Default lastActive=2026-10-23T17:30:13.330Z
+2026-10-23 17:57:17.638: [INFO] LastUsedProfileDir: C:\Users\abhinav\OneDrive\Desktop\openclaw\.openclaw\browser-data\Default
+2026-10-23 17:57:17.638: [INFO] MostRecentlyActiveProfile: name=Your Chromium path=C:\Users\abhinav\OneDrive\Desktop\openclaw\.openclaw\browser-data\Default lastActive=2026-10-23T17:30:13.330Z
+2026-10-23 17:57:17.638: [INFO] VisibilityChanged: 0
+2026-10-23 17:57:17.682: [INFO] OnDoneLoading sync enabled: 0
+2026-10-23 17:57:17.682: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-10-23 17:57:17.682: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-10-23 17:57:17.682: [INFO] BookmarksSnapshot Startup total=0 bar=0 other=0 mobile=0 showBar=0 showBarNTP=1
+2026-10-23 17:57:17.881: [INFO] BookmarkNodeAdded, ABU: 0
+2026-10-23 17:57:17.882: [INFO] BookmarkNodeAdded, ABU: 0
+2026-10-23 17:57:17.882: [INFO] BookmarkNodeAdded, ABU: 0
+2026-10-23 17:57:37.361: [INFO] VisibilityChanged: 0
+2026-10-23 17:57:41.097: [INFO] VisibilityChanged: 1
+2026-10-23 17:57:41.740: [INFO] VisibilityChanged: 0

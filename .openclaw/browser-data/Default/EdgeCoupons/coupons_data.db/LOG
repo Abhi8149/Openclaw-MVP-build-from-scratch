@@ -1,0 +1,5 @@
+2026/10/23-23:27:20.340 2bb4 Creating DB C:\Users\abhinav\OneDrive\Desktop\openclaw\.openclaw\browser-data\Default\EdgeCoupons/coupons_data.db since it was missing.
+2026/10/23-23:27:20.426 2bb4 Reusing MANIFEST C:\Users\abhinav\OneDrive\Desktop\openclaw\.openclaw\browser-data\Default\EdgeCoupons/coupons_data.db/MANIFEST-000001
+2026/10/23-23:27:51.734 418 Level-0 table #5: started
+2026/10/23-23:27:51.741 418 Level-0 table #5: 683284 bytes OK
+2026/10/23-23:27:51.744 418 Delete type=0 #3

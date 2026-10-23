@@ -10,9 +10,9 @@ async function runBrowserTest() {
   const browser = BrowserService.getInstance();
 
   try {
-    // 1. Initialize browser (connects over CDP or opens persistent Chrome)
+    // 1. Initialize browser (launches installed Chrome directly)
     console.log("Step 1: Initializing browser engine...");
-    const initStatus = await browser.init(false); // set to false for clean test sandbox
+    const initStatus = await browser.init(); // defaults to installed Chrome (no CDP flags required)
     console.log(`✅ Status: ${initStatus}\n`);
 
     // 2. Navigate to Wikipedia
@@ -44,9 +44,9 @@ async function runBrowserTest() {
       console.log("Step 5: Pressing 'Enter' to submit search...");
       const page = await browser.getPage();
       await browser.pressKey("Enter");
-      await page.waitForLoadState("domcontentloaded").catch(() => {});
+      await page.waitForLoadState("domcontentloaded").catch(() => { });
       await new Promise((r) => setTimeout(r, 1500));
-      
+
       const newSnapshot = await browser.getSnapshot();
       console.log(`✅ Landed on Search Result Page: "${newSnapshot.title}"\n`);
     }

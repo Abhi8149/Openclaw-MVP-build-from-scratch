@@ -647,7 +647,6 @@ function computeLocalSimilarity(
     const freqD: Record<string, number> = {};
     for (const t of queryTokens) freqQ[t] = (freqQ[t] || 0) + 1;
     for (const t of docTokens) freqD[t] = (freqD[t] || 0) + 1;
-    console.log("TF-IDF is starting working !");
     const allTerms = new Set([...Object.keys(freqQ), ...Object.keys(freqD)]);
     let dotProduct = 0;
     let normQ = 0;
@@ -690,7 +689,7 @@ async function fetchEmbeddingFromAPI(text: string, apiKey: string): Promise<numb
 
     for (const model of modelsToTry) {
         const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), 8000);
+        const id = setTimeout(() => controller.abort(), 15000);
 
         try {
             const res = await fetch("https://openrouter.ai/api/v1/embeddings", {

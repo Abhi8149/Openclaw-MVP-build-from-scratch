@@ -61,14 +61,26 @@ Code modifications must never blindly overwrite a user's working tree before exp
 | **AST Repo Map** | Global Outline | [utils/repo-map.ts](file:///c:/Users/abhinav/OneDrive/Desktop/openclaw/utils/repo-map.ts) | Extracts classes, functions, and line ranges into an overarching structural map. |
 | **Import Crawling** | 2-Hop Skeletons | [modes/agents/orchestrator.ts:37-107](file:///c:/Users/abhinav/OneDrive/Desktop/openclaw/modes/agents/orchestrator.ts#L37-L107) | Resolves imported modules recursively and extracts their signatures without bloating tokens. |
 | **Staged Summary** | Overlay Visibility | [modes/agents/tool-executor.ts](file:///c:/Users/abhinav/OneDrive/Desktop/openclaw/modes/agents/tool-executor.ts) | Injects a bulleted list of all uncommitted files into the system prompt on every turn so the agent is never blind to its own staged work. |
-| **Browser Control Engine** | Live Web Agency | [services/browser-service.ts](file:///c:/Users/abhinav/OneDrive/Desktop/openclaw/services/browser-service.ts) | Connects via CDP (`localhost:9222`) or persistent Chromium to navigate, extract semantic ARIA trees, and execute DOM interactions. |
+| **Browser Control Engine** | Live Web Agency | [services/browser-service.ts](file:///c:/Users/abhinav/OneDrive/Desktop/openclaw/services/browser-service.ts) | Launches installed system browser (Chrome/Edge) with persistent profile (`.openclaw/browser-data`) and anti-bot evasion flags. |
 
 ---
 
 ## 4. Omni-Action Desktop Architecture: Pillar 1 (Browser Integration)
 
-- **CDP Attachment**: Connects to the user's active Chrome browser session on port `9222`, preserving active logins, cookies, and 2FA states without credential re-entry.
-- **Persistent Sandbox Fallback**: If port `9222` is unavailable, launches Chromium in `./.openclaw/browser-data`.
+- **System Browser Channel First**: Automatically launches the user's installed Google Chrome (`channel: "chrome"`) or Microsoft Edge (`channel: "msedge"`) directly without requiring manual `--remote-debugging-port` startup flags or downloading ~400MB Playwright Chromium binaries.
+- **Persistent User Session Profile**: Profiles persist in `./.openclaw/browser-data`, maintaining login cookies, localStorage, and session state across agent runs.
+- **Anti-Bot & Automation Evasion**: Disables `navigator.webdriver` via `--disable-blink-features=AutomationControlled` and strips `--enable-automation` banners to avoid aggressive bot/Cloudflare roadblocks.
+- **Navigation Race-Condition Resilience**: `getSnapshot()` wraps DOM tree evaluation with automatic retry logic if page navigations destroy the execution context mid-evaluation.
+- **Optional CDP Mode**: Preserves backward compatibility to attach to an external CDP port (`localhost:9223`) if explicitly flagged.
 - **Semantic ARIA Snapshot**: Filters raw HTML down to actionable DOM nodes with numeric identifiers (`[ref=1]`, `[ref=2]`), preventing LLM context token bloat.
 - **Risk-Tiered Execution**: Classified via [modes/agents/risk-classifier.ts](file:///c:/Users/abhinav/OneDrive/Desktop/openclaw/modes/agents/risk-classifier.ts), ensuring financial/sensitive actions require human approval.
+
+---
+
+## 5. Semantic Retrieval & Fallback Engine (`utils/semantic-retrieval.ts`)
+
+- **Dual-Mode Vector/Keyword Indexing**:
+  - Attempts remote embedding vectorization via OpenRouter (`openai/text-embedding-3-small`).
+  - **Graceful Local Fallback**: When network requests abort or the Embeddings API times out, seamlessly defaults to an in-memory TF-IDF + BM25 keyword overlap engine without halting session execution.
+  - **Silent High-Throughput Calculation**: Term frequencies and dot products are calculated silently across candidate symbols and AST skeletons.
 
