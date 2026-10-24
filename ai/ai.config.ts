@@ -59,7 +59,8 @@ export async function getAgentModel(goal?: string){
                 cost_quality_tradeoff: tradeoff,
                 allowed_models: [
                     "nvidia/nemotron-3-ultra-550b-a55b:free",
-                    "deepseek/deepseek-v4-flash"
+                    "deepseek/deepseek-v4-flash",
+                    "openai/gpt-6-luna"
                 ]
             }]
         };
@@ -73,5 +74,6 @@ export async function getAgentModel(goal?: string){
 export const MODEL_PRICING: Record<string, { input: number; output: number }> = {
     "nvidia/nemotron-3-ultra-550b-a55b:free": { input: 0.0, output: 0.0 },
     "deepseek/deepseek-v4-flash": { input: 0.14, output: 0.28 },
+    "openai/gpt-6-luna":{input:0.1, output:0.5},
     "openrouter/auto": { input: 0.07, output: 0.14 }, // Estimated average for auto-routing cost calculation
 };
